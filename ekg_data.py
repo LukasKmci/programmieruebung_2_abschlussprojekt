@@ -20,7 +20,13 @@ class EKG_data:
 
     @staticmethod
     def load_by_id(ekg_id, patients_data):
-        """Load EKG data by ID from a patient data list"""
+        """Load EKG data by ID from a patient data list
+        
+        Parameters:
+        - ekg_id: ID of the EKG test to load
+        - patients_data: List of patient data dictionaries
+        """
+
         for person in patients_data:
             for ekg in person.get("ekg_tests", []):
                 if ekg["id"] == ekg_id:
@@ -33,6 +39,11 @@ class EKG_data:
     def find_peaks(series, threshold=360, window_size=5, min_peak_distance=200):
         """
         Find robust peaks using a window-based local maximum strategy.
+
+        Parameters:
+        - threshold: Schwellenwert für Peak-Erkennung
+        - window_size: Größe des Fensters für lokale Maxima
+        - min_peak_distance: Mindestabstand zwischen Peaks in Indizes
         """
         peaks = []
         last_index = -min_peak_distance
@@ -59,13 +70,18 @@ class EKG_data:
         return pd.DataFrame(peaks, columns=["index", "value"])
    
     def calc_max_heart_rate(self, year_of_birth, gender):
-        """Berechnet die maximale Herzfrequenz basierend auf Alter und Geschlecht."""
+        """Berechnet die maximale Herzfrequenz basierend auf Alter und Geschlecht.
+        
+        Parameters:
+        - year_of_birth: Geburtsjahr der Person
+        - gender: Geschlecht der Person
+        """
         age = datetime.now().year - year_of_birth
 
         if gender.lower() == "male":
-            max_hr = 220 - age
+            max_hr = 220 - age # Formel für Männer
         elif gender.lower() == "female":
-            max_hr = 226 - age  # Alternative Formel für Frauen
+            max_hr = 226 - age  # Formel für Frauen
         else:
             max_hr = 223 - age  # Neutraler Mittelwert, wenn Geschlecht unklar
 
@@ -75,74 +91,56 @@ class EKG_data:
             "max_hr": max_hr
         }
 
-    def plot_time_series(self, threshold=360, window_size=5, min_peak_distance=200,
-                        range_start=None, range_end=None):
+    def plot_time_series(self, threshold=360, min_peak_distance=200, range_start=None, range_end=None):
         """
-        Plot EKG data with detected peaks.
-        Time is shown in seconds, starting from 0s relative to first data point.
+        Erstellt einen Plotly-Plot der EKG-Zeitreihe
+        
+        Parameters:
+        - threshold: Schwellenwert für Peak-Erkennung
+        - min_peak_distance: Mindestabstand zwischen Peaks
+        - range_start: Startzeit in Sekunden
+        - range_end: Endzeit in Sekunden
         """
-
-        # Originaldaten
-        time_ms = self.df["time in ms"]
-        signal = self.df["Messwerte in mV"]
-
-        # Bereichsfilterung
-        mask = pd.Series([True] * len(time_ms))
-        if range_start is not None:
-            mask &= time_ms >= range_start
-        if range_end is not None:
-            mask &= time_ms < range_end
-
-        time_ms = time_ms[mask].reset_index(drop=True)
-        signal = signal[mask].reset_index(drop=True)
-
-        # 🛡 Schutz: Wenn nach dem Filtern keine Daten mehr vorhanden sind
-        if time_ms.empty or signal.empty:
-            return go.Figure().update_layout(
-                title="⚠️ Keine Daten im gewählten Zeitbereich",
-                xaxis_title="Zeit (s)",
-                yaxis_title="Spannung (mV)"
-            )
-        # Zeit auf 0 normieren (und in Sekunden umrechnen)
-        time_sec = (time_ms - time_ms.iloc[0]) / 1000.0
-
-        # Peaks berechnen im gefilterten Bereich
-        peaks_df = self.find_peaks(signal, threshold=threshold,
-                                    window_size=window_size,
-                                    min_peak_distance=min_peak_distance)
-        peaks_df["time"] = peaks_df["index"].apply(lambda i: time_sec.iloc[i])
-
+        
+        # Zeit in Sekunden normalisieren (ab 0 startend)
+        time_seconds = (self.df["time in ms"] - self.df["time in ms"].min()) / 1000
+        
+        # Bereich filtern falls angegeben
+        if range_start is not None and range_end is not None:
+            mask = (time_seconds >= range_start) & (time_seconds <= range_end)
+            filtered_time = time_seconds[mask]
+            filtered_data = self.df["Messwerte in mV"][mask]
+        else:
+            filtered_time = time_seconds
+            filtered_data = self.df["Messwerte in mV"]
+        
         # Plot erstellen
         fig = go.Figure()
-
+        
+        # EKG-Signal
         fig.add_trace(go.Scatter(
-            x=time_sec, y=signal,
-            mode="lines",
-            name="EKG",
-            line=dict(color="blue")
+            x=filtered_time,
+            y=filtered_data,
+            mode='lines',
+            name='EKG Signal',
+            line=dict(color='blue', width=1)
         ))
-
-        fig.add_trace(go.Scatter(
-            x=peaks_df["time"],
-            y=peaks_df["value"],
-            mode="markers",
-            name="Peaks",
-            marker=dict(color="red", size=6, symbol="x"),
-            hovertemplate="Zeit: %{x:.2f} s<br>mV: %{y}<extra></extra>"
-        ))
-
+        
+        # Layout anpassen
         fig.update_layout(
-            title=f"EKG mit Peaks (ID {self.id})",
-            xaxis_title="Zeit (s)",
-            yaxis_title="Spannung (mV)"
+            title='EKG Zeitreihe',
+            xaxis_title='Zeit (Sekunden)',
+            yaxis_title='Amplitude',
+            hovermode='x unified'
         )
-
+        
         return fig
         
 
 
 if __name__ == "__main__":
-    #try:
+    # Testen der EKG_data Klasse
+    
     # JSON laden
     with open("data/person_db.json", "r", encoding="utf-8") as f:
         patients_data = json.load(f)
@@ -165,4 +163,4 @@ if __name__ == "__main__":
 
 
     #except Exception as e:
-    #print("❌ Fehler beim Testen:", e)
+    #print("Fehler beim Testen:", e)

@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """)
 
-# EKG-Tabelle (vereinfacht)
+# EKG-Tabelle
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS ekg_tests (
     id INTEGER PRIMARY KEY,
