@@ -251,6 +251,8 @@ class EKG_data:
         fig = go.Figure()
         
         # EKG-Signal
+        
+        # EKG-Signal
         fig.add_trace(go.Scatter(
             x=filtered_time,
             y=filtered_data,
@@ -325,6 +327,7 @@ class EKG_data:
             gridcolor='lightgray',
             zeroline=True
         )
+        
         
         return fig
             
