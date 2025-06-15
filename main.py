@@ -64,7 +64,7 @@ if selected_name:
         if ekg_tests:
             st.success(f"✅ {len(ekg_tests)} EKG-Datensatz(e) verfügbar")
         else:
-            st.error("❌ Keine EKG-Daten verfügbar")
+            st.error("Keine EKG-Daten verfügbar")
 
     # EKG-Analyse-Sektion
     if ekg_tests and selected_ekg_id:
@@ -73,7 +73,7 @@ if selected_name:
         
         ekg_obj = EKG_data.load_by_id(int(selected_ekg_id), persons_data)
         
-        # Kennzahlen in Spalten
+        # Kennzahlen in Spalten - jetzt mit 5 Spalten für die durchschnittliche Herzfrequenz
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
@@ -89,14 +89,50 @@ if selected_name:
             st.metric("⏱️ Dauer", f"{ekg_duration_seconds/60:.0f} min")
         
         with col4:
-            st.metric("📊 Datenpunkte", f"{len(ekg_obj.df):,}")
+            # Durchschnittliche Herzfrequenz berechnen und anzeigen
+            try:
+                # Debug: Prüfe ob die Methode existiert
+                if hasattr(ekg_obj, 'calculate_average_heart_rate'):
+                    # Berechne die durchschnittliche Herzfrequenz für die gesamten EKG-Daten
+                    avg_hr = ekg_obj.calculate_average_heart_rate()
+                    
+                    if avg_hr is not None:
+                        st.metric("💓 Ø Herzfrequenz", f"{avg_hr:.1f} bpm")
+                        st.markdown(f"<div style='text-align: center; color: #28a745; font-size: 12px;'>●</div>", 
+                                  unsafe_allow_html=True)
+                    else:
+                        st.metric("💓 Ø Herzfrequenz", "Fehler")
+                        st.caption("🔍 Nicht genügend gültige Peaks gefunden")
+                        
+                        # Debug-Info in Expander
+                        with st.expander("🔧 Debug-Info"):
+                            st.write("Die Herzfrequenz-Berechnung konnte nicht durchgeführt werden.")
+                            st.write("Mögliche Ursachen:")
+                            st.write("- Zu wenige R-Peaks erkannt")
+                            st.write("- Schlechte Signalqualität")
+                            st.write("- Parameter müssen angepasst werden")
+                else:
+                    # Fallback: Versuche eine einfachere Herzfrequenz-Berechnung
+                    st.metric("💓 Ø Herzfrequenz", "N/A")
+                    st.caption("⚠️ Methode nicht verfügbar")
+                        
+            except Exception as e:
+                st.metric("💓 Ø Herzfrequenz", "N/A")
+                st.caption(f"❌ Error: {str(e)[:30]}...")
+                
+                # Debug-Expander für Entwicklung
+                with st.expander("🐛 Fehler-Details"):
+                    st.error(f"**Vollständiger Fehler:** {str(e)}")
+                    st.write("**EKG-Objekt Methoden:**")
+                    methods = [method for method in dir(ekg_obj) if not method.startswith('_')]
+                    st.write(methods)
 
         # Plot-Einstellungen
         st.markdown("---")
         st.header("⚙️ Plot-Einstellungen")
         
-        # Zwei Spalten für Einstellungen
-        col1, col2 = st.columns([2, 1])
+        # Spalten für Einstellungen
+        col1, col2, col3 = st.columns([2,1,1])
         
         with col1:
             # Zeitbereich-Auswahl
@@ -114,40 +150,55 @@ if selected_name:
                 format="%.1f s",
                 help="Wählen Sie den Zeitbereich für die EKG-Darstellung"
             )
-            
-            st.info(f"📍 Gewählter Bereich: {time_range[0]:.1f} - {time_range[1]:.1f} Sekunden")
-        
-        with col2:
-            st.subheader("🔧 Erweiterte Einstellungen")
-            
-            # Zusätzliche Plot-Parameter
-            threshold = st.number_input("Schwellenwert", value=360, min_value=0, max_value=1000)
-            min_peak_distance = st.number_input("Min. Peak-Abstand", value=200, min_value=1, max_value=500)
-            
-            # Info über gewählten Bereich
-            duration_selected = time_range[1] - time_range[0]
-            st.metric("⏰ Ausgewählte Dauer", f"{duration_selected:.1f} s")
 
+        with col2:    
+            st.metric("📍 Gewählter Bereich:", f"{time_range[0]:.1f} - {time_range[1]:.1f} Sekunden")
+
+        with col3:   
+            # Zusätzliche Info: Herzfrequenz für gewählten Zeitbereich
+            if time_range[0] != 0.0 or time_range[1] != max_duration:
+                try:
+                    if hasattr(ekg_obj, 'calculate_average_heart_rate'):
+                        range_hr = ekg_obj.calculate_average_heart_rate(
+                            range_start=time_range[0], 
+                            range_end=time_range[1]
+                        )
+                        if range_hr is not None:
+                            st.metric("💓 Herzfrequenz im Bereich:", f"{range_hr:.1f} bpm")
+                        else:
+                            st.warning("⚠️ Herzfrequenz für Bereich nicht berechenbar")
+                except Exception as e:
+                    st.metric("🔍 Bereichs-HR:", f"{str(e)[:50]}")
+
+        # Parameter mit Standardwerten definieren
+        sampling_rate = 500
+        threshold_factor = 0.6
+        min_rr_interval = 0.3
+        max_rr_interval = 2.0
+        use_adaptive = True
+        
         # EKG-Plot
         st.markdown("---")
         st.header("📊 EKG-Visualisierung")
         
         try:
             with st.spinner("🔄 Lade EKG-Daten..."):
+                # Plot erstellen
                 fig = ekg_obj.plot_time_series(
-                    threshold=threshold,
-                    min_peak_distance=min_peak_distance,
                     range_start=time_range[0],
-                    range_end=time_range[1]
+                    range_end=time_range[1],
+                    sampling_rate=sampling_rate,
+                    threshold_factor=threshold_factor,
+                    min_rr_interval=min_rr_interval,
+                    max_rr_interval=max_rr_interval,
+                    adaptive_threshold=use_adaptive
                 )
-                st.plotly_chart(fig, use_container_width=True, key=f"plot_{selected_ekg_id}")
                 
-                # Erfolgsbestätigung
-                st.success("✅ EKG erfolgreich dargestellt")
+                st.plotly_chart(fig, use_container_width=True, key=f"plot_{selected_ekg_id}")
                 
         except Exception as e:
             st.error(f"❌ Fehler beim Erstellen des Plots: {e}")
-            st.info("💡 Versuchen Sie einen anderen Zeitbereich oder andere Parameter")
+            st.info("💡 Versuchen Sie einen anderen Zeitbereich")
 
     elif not ekg_tests:
         st.warning("⚠️ Für diese Person sind keine EKG-Daten verfügbar.")
@@ -163,10 +214,12 @@ else:
         
         st.info("**📋 Verfügbare Funktionen:**")
         st.write("🫀 Maximale Herzfrequenz berechnen")
+        st.write("💓 Durchschnittliche Herzfrequenz anzeigen")
         st.write("📊 EKG-Daten visualisieren") 
         st.write("⏱️ Flexible Zeitbereich-Auswahl")
         st.write("📈 Interaktive Plots")
+        st.write("🔍 Anpassbare Peak-Detection")
 
 # Footer
 st.markdown("---")
-st.caption("EKG Analyse Dashboard | Version 1.0 | 🫀 Für medizinische Forschung")
+st.caption("EKG Analyse Dashboard | Version 1.0 | Lukas Köhler | Simon Krainer")
