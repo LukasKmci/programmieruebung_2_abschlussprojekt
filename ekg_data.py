@@ -93,9 +93,9 @@ class EKG_data:
         raise ValueError(f"EKG with ID {ekg_id} not found in database")
 
     @staticmethod
-    def find_peaks(series: pd.Series, sampling_rate: int = 500, threshold_factor: float = 0.6, 
+    def find_peaks(series: pd.Series, sampling_rate: int = 500, threshold_factor: float = 1.0, 
                    window_size: Optional[int] = None, min_rr_interval: float = 0.3, 
-                   max_rr_interval: float = 2.0, adaptive_threshold: bool = True) -> pd.DataFrame:
+                   max_rr_interval: float = 2.5, adaptive_threshold: bool = True) -> pd.DataFrame:
         """
         Find R-peaks in ECG signal using optimized window-based local maximum detection.
         
@@ -214,139 +214,103 @@ class EKG_data:
         """
         return str(sorted(kwargs.items()))
 
-    def plot_time_series(self, range_start: Optional[float] = None, range_end: Optional[float] = None, 
-                        sampling_rate: int = 500, threshold_factor: float = 0.6, 
-                        min_rr_interval: float = 0.3, max_rr_interval: float = 2.0, 
-                        adaptive_threshold: bool = True, window_size: Optional[int] = None) -> go.Figure:
-        """
-        Create optimized Plotly plot of EKG time series with peak detection.
-        Includes caching and data reduction for better performance.
-        
-        Args:
-            range_start: Start time in seconds
-            range_end: End time in seconds  
-            sampling_rate: Sampling rate in Hz (default: 500)
-            threshold_factor: Factor for adaptive threshold (0.0-1.0, default: 0.6)
-            min_rr_interval: Minimum RR interval in seconds (default: 0.3s)
-            max_rr_interval: Maximum RR interval in seconds (default: 2.0s)
-            adaptive_threshold: Whether to use adaptive threshold
-            window_size: Window size for peak detection (auto if None)
-            
-        Returns:
-            go.Figure: Plotly figure object with EKG data and detected peaks
-        """
-        # Normalize time to seconds (starting from 0)
+    def plot_time_series(self, 
+                        range_start=None, 
+                        range_end=None, 
+                        sampling_rate=500, 
+                        threshold_factor=0.6, 
+                        min_rr_interval=0.3, 
+                        max_rr_interval=2.0, 
+                        adaptive_threshold=True, 
+                        window_size=None,
+                        line_color='#2E86AB', 
+                        peak_color='#F24236',
+                        show_grid=True, 
+                        dark_theme=True):
+
+        # Zeit normalisieren
         time_seconds = (self.df["time in ms"] - self.df["time in ms"].min()) / 1000
-        
-        # Filter range if specified
+
+        # Bereich filtern
         if range_start is not None and range_end is not None:
             mask = (time_seconds >= range_start) & (time_seconds <= range_end)
-            filtered_time = time_seconds[mask]
-            filtered_data = self.df["Messwerte in mV"][mask]
         else:
-            filtered_time = time_seconds
-            filtered_data = self.df["Messwerte in mV"]
-        
-        # Data reduction for large datasets to improve rendering performance
-        max_points = 10000  # Limit points for smooth rendering
-        if len(filtered_data) > max_points:
-            # Downsample data intelligently
-            step = len(filtered_data) // max_points
-            filtered_time = filtered_time.iloc[::step]
-            filtered_data = filtered_data.iloc[::step]
-        
-        # Peak detection with caching
+            mask = np.ones(len(time_seconds), dtype=bool)
+
+        filtered_time = time_seconds[mask].reset_index(drop=True)
+        filtered_data = self.df["Messwerte in mV"][mask].reset_index(drop=True)
+
+        # R-Peaks berechnen (aus Cache oder neu)
         cache_key = self._get_cache_key(
             sampling_rate=sampling_rate, threshold_factor=threshold_factor,
             min_rr_interval=min_rr_interval, max_rr_interval=max_rr_interval,
             adaptive_threshold=adaptive_threshold, window_size=window_size,
             range_start=range_start, range_end=range_end
         )
-        
         if cache_key not in self._peaks_cache:
-            try:
-                peaks_df = self.find_peaks(
-                    filtered_data,
-                    sampling_rate=sampling_rate,
-                    threshold_factor=threshold_factor,
-                    window_size=window_size,
-                    min_rr_interval=min_rr_interval,
-                    max_rr_interval=max_rr_interval,
-                    adaptive_threshold=adaptive_threshold
-                )
-                self._peaks_cache[cache_key] = peaks_df
-            except Exception as e:
-                print(f"Error in peak detection: {e}")
-                peaks_df = pd.DataFrame(columns=["index", "value", "rr_interval"])
-                self._peaks_cache[cache_key] = peaks_df
+            peaks_df = self.find_peaks(
+                self.df["Messwerte in mV"], sampling_rate=sampling_rate,
+                threshold_factor=threshold_factor, window_size=window_size,
+                min_rr_interval=min_rr_interval, max_rr_interval=max_rr_interval,
+                adaptive_threshold=adaptive_threshold
+            )
+            self._peaks_cache[cache_key] = peaks_df
         else:
             peaks_df = self._peaks_cache[cache_key]
-        
-        # Convert peak indices to times
-        peak_times = []
-        peak_values = []
-        if len(peaks_df) > 0:
-            for _, peak in peaks_df.iterrows():
-                peak_idx = int(peak['index'])
-                if peak_idx < len(filtered_time):
-                    peak_times.append(filtered_time.iloc[peak_idx])
-                    peak_values.append(peak['value'])
-        
-        # Create optimized plot
+
+        # R-Peak-Zeitpunkte im sichtbaren Bereich
+        peak_times, peak_values = [], []
+        for _, row in peaks_df.iterrows():
+            idx = int(row['index'])
+            if idx < len(self.df):
+                t = (self.df["time in ms"].iloc[idx] - self.df["time in ms"].min()) / 1000
+                if range_start is None or (range_start <= t <= range_end):
+                    peak_times.append(t)
+                    peak_values.append(row['value'])
+
+        # Farben
+        bg = 'rgb(17,17,17)' if dark_theme else 'white'
+        font_color = 'white' if dark_theme else 'black'
+        grid_color = 'rgba(128,128,128,0.3)' if dark_theme else 'rgba(128,128,128,0.2)'
+        zeroline_color = 'rgba(128,128,128,0.5)' if dark_theme else 'rgba(128,128,128,0.4)'
+
+        # Plot erstellen
         fig = go.Figure()
-        
-        # EKG signal trace
+
         fig.add_trace(go.Scatter(
             x=filtered_time,
             y=filtered_data,
             mode='lines',
-            name='EKG Signal',
-            line=dict(color='blue', width=1),
-            hovertemplate='Zeit: %{x:.2f}s<br>Amplitude: %{y:.2f}mV<extra></extra>'
+            line=dict(color=line_color, width=1.5),
+            name='EKG',
+            hovertemplate='Zeit: %{x:.2f}s<br>Amplitude: %{y:.3f} mV<extra></extra>'
         ))
-        
-        # R-peaks trace
-        if len(peak_times) > 0:
+        print(peak_times, peak_values)
+        if peak_times:
             fig.add_trace(go.Scatter(
                 x=peak_times,
                 y=peak_values,
                 mode='markers',
-                name=f'R-Peaks ({len(peak_times)})',
-                marker=dict(color='red', size=8, symbol='triangle-up'),
-                hovertemplate='R-Peak<br>Zeit: %{x:.2f}s<br>Amplitude: %{y:.2f}mV<extra></extra>'
+                marker=dict(color=peak_color, size=10, symbol='triangle-up', line=dict(color='white', width=1.5)),
+                name='R-Peaks',
+                hovertemplate='R-Peak<br>Zeit: %{x:.2f}s<br>Amplitude: %{y:.3f} mV<extra></extra>'
             ))
-            
-            # Calculate and display heart rate
-            if len(peak_times) > 1:
-                rr_intervals = np.diff(peak_times)
-                if len(rr_intervals) > 0:
-                    avg_rr = np.mean(rr_intervals)
-                    avg_hr = 60 / avg_rr if avg_rr > 0 else 0
-                    title_text = f'EKG Time Series - ∅ Heart Rate: {avg_hr:.1f} bpm'
-                else:
-                    title_text = 'EKG Time Series'
-            else:
-                title_text = 'EKG Time Series - Insufficient peaks for heart rate'
-        else:
-            title_text = 'EKG Time Series - No R-peaks detected'
-        
-        # Optimize layout for performance
+
         fig.update_layout(
-            title=title_text,
-            xaxis_title='Time (Seconds)',
+            xaxis_title='Zeit (Sekunden)',
             yaxis_title='Amplitude (mV)',
+            plot_bgcolor=bg,
+            paper_bgcolor=bg,
+            font=dict(color=font_color),
             hovermode='x unified',
-            showlegend=True,
-            legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
-            autosize=True,
-            margin=dict(l=50, r=50, t=80, b=50)
+            margin=dict(l=60, r=40, t=40, b=60)
         )
-        
-        # Grid styling
-        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='lightgray', zeroline=True)
-        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='lightgray', zeroline=True)
-        
+
+        fig.update_xaxes(showgrid=show_grid, gridcolor=grid_color, zeroline=True, zerolinecolor=zeroline_color)
+        fig.update_yaxes(showgrid=show_grid, gridcolor=grid_color, zeroline=True, zerolinecolor=zeroline_color)
+
         return fig
+
 
     def calculate_average_heart_rate(self, range_start: Optional[float] = None, 
                                    range_end: Optional[float] = None,

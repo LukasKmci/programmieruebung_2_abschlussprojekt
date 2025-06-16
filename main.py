@@ -21,125 +21,135 @@ with st.sidebar:
     st.header("📋 Navigation")
     
     # Personen laden
-    persons_data = Person.load_person_data()
-    person_names = Person.get_person_list(persons_data)
+    try:
+        persons_data = Person.load_person_data()
+        person_names = Person.get_person_list(persons_data)
+        
+        if not person_names:
+            st.warning("⚠️ Keine Personen in der Datenbank gefunden")
+            st.stop()
+            
+    except Exception as e:
+        st.error(f"❌ Fehler beim Laden der Personendaten: {e}")
+        st.stop()
     
     # Auswahl der Versuchsperson
     selected_name = st.selectbox("👤 Versuchsperson auswählen", person_names, key="person_select")
     
+    selected_ekg_id = None
     if selected_name:
         person = Person.find_person_data_by_name(selected_name)
         
-        # EKG-Datensatz auswählen
-        ekg_tests = person.get("ekg_tests", [])
-        if ekg_tests:
-            st.markdown("---")
-            ekg_ids = [str(test["id"]) for test in ekg_tests]
-            selected_ekg_id = st.selectbox("📊 EKG-Datensatz wählen", ekg_ids, key="ekg_select")
+        if person:
+            # EKG-Datensatz auswählen
+            ekg_tests = person.get("ekg_tests", [])
+            if ekg_tests:
+                st.markdown("---")
+                ekg_options = [f"Test {test['id']} ({test['date']})" for test in ekg_tests]
+                ekg_ids = [str(test["id"]) for test in ekg_tests]
+                
+                selected_index = st.selectbox(
+                    "📊 EKG-Datensatz wählen", 
+                    range(len(ekg_options)),
+                    format_func=lambda x: ekg_options[x],
+                    key="ekg_select"
+                )
+                selected_ekg_id = ekg_ids[selected_index]
 
 # Hauptinhalt
 if selected_name:
     person = Person.find_person_data_by_name(selected_name)
     
+    if not person:
+        st.error(f"❌ Person '{selected_name}' nicht gefunden")
+        st.stop()
+    
     # Personeninfo-Sektion
     st.header("👤 Personeninformationen")
     
-    col1, col2, col3 = st.columns([1, 2, 2])
+    col1, col2 = st.columns([2, 2])
     
     with col1:
         # Bild anzeigen
-        picture_path = person["picture_path"]
-        if os.path.exists(picture_path):
-            st.image(picture_path, caption=selected_name, width=200)
+        picture_path = person.get("picture_path", "")
+        if picture_path and os.path.exists(picture_path):
+            try:
+                st.image(picture_path, caption=selected_name, width=200)
+            except Exception as e:
+                st.warning(f"📷 Fehler beim Laden des Bildes: {e}")
         else:
-            st.warning("📷 Kein Bild verfügbar")
+            st.info("📷 Kein Bild verfügbar")
     
     with col2:
         st.subheader("📝 Persönliche Daten")
         st.write(f"**Name:** {selected_name}")
-        st.write(f"**Geburtsjahr:** {person['date_of_birth']}")
-        st.write(f"**Verfügbare EKG-Tests:** {len(ekg_tests)}")
-    
-    with col3:
-        if ekg_tests:
-            st.success(f"✅ {len(ekg_tests)} EKG-Datensatz(e) verfügbar")
-        else:
-            st.error("Keine EKG-Daten verfügbar")
+        st.write(f"**Geburtsjahr:** {person.get('date_of_birth', 'Unbekannt')}")
+        st.write(f"**Geschlecht:** {person.get('gender', 'Unbekannt')}")
+        ekg_count = Person.get_available_ekg_count(person)
+        st.write(f"**Verfügbare EKG-Tests:** {ekg_count}")
+
 
     # EKG-Analyse-Sektion
     if ekg_tests and selected_ekg_id:
         st.markdown("---")
-        st.header("📈 EKG-Analyse")
+        st.header("📊 EKG-Kennzahlen")
         
-        ekg_obj = EKG_data.load_by_id(int(selected_ekg_id), persons_data)
+        try:
+            with st.spinner("🔄 Lade EKG-Daten..."):
+                ekg_obj = EKG_data.load_by_id(int(selected_ekg_id), persons_data)
+        except Exception as e:
+            st.error(f"❌ Fehler beim Laden der EKG-Daten: {e}")
+            st.stop()
         
-        # Kennzahlen in Spalten - jetzt mit 5 Spalten für die durchschnittliche Herzfrequenz
+        # Kennzahlen in Spalten
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            hr_info = ekg_obj.calc_max_heart_rate(ekg_obj.birth_year, ekg_obj.gender)
-            st.metric("🫀 Max HR", f"{hr_info['max_hr']} bpm")
+            try:
+                hr_info = ekg_obj.calc_max_heart_rate(ekg_obj.birth_year, ekg_obj.gender)
+                st.metric("🫀 Max HR", f"{hr_info['max_hr']} bpm")
+            except Exception as e:
+                st.metric("🫀 Max HR", "Fehler")
+                st.caption(f"❌ {str(e)[:30]}...")
         
         with col2:
             st.metric("📅 Testdatum", ekg_obj.date)
         
         with col3:
-            ekg_duration_ms = ekg_obj.df["time in ms"].max() - ekg_obj.df["time in ms"].min()
-            ekg_duration_seconds = round(ekg_duration_ms / 1000)
-            st.metric("⏱️ Dauer", f"{ekg_duration_seconds/60:.0f} min")
+            try:
+                duration_ms = ekg_obj.df["time in ms"].max() - ekg_obj.df["time in ms"].min()
+                duration_minutes = duration_ms / 1000 / 60
+                st.metric("⏱️ Dauer", f"{duration_minutes:.1f} min")
+            except Exception as e:
+                st.metric("⏱️ Dauer", "Fehler")
+                st.caption(f"❌ {str(e)[:30]}...")
         
         with col4:
             # Durchschnittliche Herzfrequenz berechnen und anzeigen
             try:
-                # Debug: Prüfe ob die Methode existiert
-                if hasattr(ekg_obj, 'calculate_average_heart_rate'):
-                    # Berechne die durchschnittliche Herzfrequenz für die gesamten EKG-Daten
-                    avg_hr = ekg_obj.calculate_average_heart_rate()
-                    
-                    if avg_hr is not None:
-                        st.metric("💓 Ø Herzfrequenz", f"{avg_hr:.1f} bpm")
-                        st.markdown(f"<div style='text-align: center; color: #28a745; font-size: 12px;'>●</div>", 
-                                  unsafe_allow_html=True)
-                    else:
-                        st.metric("💓 Ø Herzfrequenz", "Fehler")
-                        st.caption("🔍 Nicht genügend gültige Peaks gefunden")
-                        
-                        # Debug-Info in Expander
-                        with st.expander("🔧 Debug-Info"):
-                            st.write("Die Herzfrequenz-Berechnung konnte nicht durchgeführt werden.")
-                            st.write("Mögliche Ursachen:")
-                            st.write("- Zu wenige R-Peaks erkannt")
-                            st.write("- Schlechte Signalqualität")
-                            st.write("- Parameter müssen angepasst werden")
+                avg_hr = ekg_obj.calculate_average_heart_rate()
+                
+                if avg_hr is not None:
+                    st.metric("💓 Ø Herzfrequenz", f"{avg_hr:.1f} bpm")
                 else:
-                    # Fallback: Versuche eine einfachere Herzfrequenz-Berechnung
                     st.metric("💓 Ø Herzfrequenz", "N/A")
-                    st.caption("⚠️ Methode nicht verfügbar")
                         
             except Exception as e:
-                st.metric("💓 Ø Herzfrequenz", "N/A")
-                st.caption(f"❌ Error: {str(e)[:30]}...")
-                
-                # Debug-Expander für Entwicklung
-                with st.expander("🐛 Fehler-Details"):
-                    st.error(f"**Vollständiger Fehler:** {str(e)}")
-                    st.write("**EKG-Objekt Methoden:**")
-                    methods = [method for method in dir(ekg_obj) if not method.startswith('_')]
-                    st.write(methods)
+                st.metric("💓 Ø Herzfrequenz", "Fehler")
 
         # Plot-Einstellungen
         st.markdown("---")
         st.header("⚙️ Plot-Einstellungen")
         
         # Spalten für Einstellungen
-        col1, col2, col3 = st.columns([2,1,1])
+        col1, col2 = st.columns([3, 1])
         
         with col1:
             # Zeitbereich-Auswahl
             st.subheader("🕐 Zeitbereich auswählen")
             
             time_data_seconds = (ekg_obj.df["time in ms"] - ekg_obj.df["time in ms"].min()) / 1000
-            max_duration = time_data_seconds.max()
+            max_duration = float(time_data_seconds.max())
             
             time_range = st.slider(
                 "Zeitbereich (Sekunden)",
@@ -152,53 +162,42 @@ if selected_name:
             )
 
         with col2:    
-            st.metric("📍 Gewählter Bereich:", f"{time_range[0]:.1f} - {time_range[1]:.1f} Sekunden")
-
-        with col3:   
-            # Zusätzliche Info: Herzfrequenz für gewählten Zeitbereich
+            st.metric("📍 Zeitspanne", f"{time_range[1] - time_range[0]:.1f} s")
+  
+            # Herzfrequenz für gewählten Zeitbereich
             if time_range[0] != 0.0 or time_range[1] != max_duration:
                 try:
-                    if hasattr(ekg_obj, 'calculate_average_heart_rate'):
-                        range_hr = ekg_obj.calculate_average_heart_rate(
-                            range_start=time_range[0], 
-                            range_end=time_range[1]
-                        )
-                        if range_hr is not None:
-                            st.metric("💓 Herzfrequenz im Bereich:", f"{range_hr:.1f} bpm")
-                        else:
-                            st.warning("⚠️ Herzfrequenz für Bereich nicht berechenbar")
+                    range_hr = ekg_obj.calculate_average_heart_rate(
+                        range_start=time_range[0], 
+                        range_end=time_range[1]
+                    )
+                    if range_hr is not None:
+                        st.metric("💓 Bereichs-HR", f"{range_hr:.1f} bpm")
+                    else:
+                        st.warning("⚠️ HR nicht berechenbar")
                 except Exception as e:
-                    st.metric("🔍 Bereichs-HR:", f"{str(e)[:50]}")
+                    st.caption(f"❌ Fehler: {str(e)[:30]}...")
 
-        # Parameter mit Standardwerten definieren
-        sampling_rate = 500
-        threshold_factor = 0.6
-        min_rr_interval = 0.3
-        max_rr_interval = 2.0
-        use_adaptive = True
-        
         # EKG-Plot
         st.markdown("---")
-        st.header("📊 EKG-Visualisierung")
+        st.header("📈 EKG-Visualisierung")
         
         try:
-            with st.spinner("🔄 Lade EKG-Daten..."):
-                # Plot erstellen
+            with st.spinner("🔄 Erstelle EKG-Plot..."):
                 fig = ekg_obj.plot_time_series(
                     range_start=time_range[0],
-                    range_end=time_range[1],
-                    sampling_rate=sampling_rate,
-                    threshold_factor=threshold_factor,
-                    min_rr_interval=min_rr_interval,
-                    max_rr_interval=max_rr_interval,
-                    adaptive_threshold=use_adaptive
+                    range_end=time_range[1]
                 )
                 
-                st.plotly_chart(fig, use_container_width=True, key=f"plot_{selected_ekg_id}")
+                st.plotly_chart(
+                    fig, 
+                    use_container_width=True, 
+                    key=f"plot_{selected_ekg_id}_{time_range[0]}_{time_range[1]}"
+                )
                 
         except Exception as e:
             st.error(f"❌ Fehler beim Erstellen des Plots: {e}")
-            st.info("💡 Versuchen Sie einen anderen Zeitbereich")
+            st.info("💡 Versuchen Sie einen anderen Zeitbereich oder kontaktieren Sie den Support")
 
     elif not ekg_tests:
         st.warning("⚠️ Für diese Person sind keine EKG-Daten verfügbar.")
@@ -213,13 +212,18 @@ else:
         st.markdown("### Wählen Sie in der Seitenleiste eine Versuchsperson aus, um zu beginnen.")
         
         st.info("**📋 Verfügbare Funktionen:**")
-        st.write("🫀 Maximale Herzfrequenz berechnen")
-        st.write("💓 Durchschnittliche Herzfrequenz anzeigen")
-        st.write("📊 EKG-Daten visualisieren") 
-        st.write("⏱️ Flexible Zeitbereich-Auswahl")
-        st.write("📈 Interaktive Plots")
-        st.write("🔍 Anpassbare Peak-Detection")
+        features = [
+            "🫀 Maximale Herzfrequenz berechnen",
+            "💓 Durchschnittliche Herzfrequenz anzeigen", 
+            "📊 EKG-Daten visualisieren",
+            "⏱️ Flexible Zeitbereich-Auswahl",
+            "📈 Interaktive Plots mit Peak-Detection",
+            "🔍 Optimierte Performance durch Caching"
+        ]
+        
+        for feature in features:
+            st.write(feature)
 
 # Footer
 st.markdown("---")
-st.caption("EKG Analyse Dashboard | Version 1.0 | Lukas Köhler | Simon Krainer")
+st.caption("EKG Analyse Dashboard | Version 2.0 | Lukas Köhler | Simon Krainer")
