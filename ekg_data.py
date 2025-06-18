@@ -1,456 +1,197 @@
-"""
-EKG data processing module for EKG analysis system.
-Handles EKG data loading, peak detection, heart rate calculation and visualization
-with performance optimizations and clean architecture.
-"""
-
 import json
 import pandas as pd
-import plotly.graph_objects as go
 import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+import plotly.io as pio
+pio.renderers.default = "browser"
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
-from functools import lru_cache
 
 
 class EKG_data:
-    """
-    EKG data processor class for handling individual EKG test data.
-    Provides methods for peak detection, heart rate analysis and visualization
-    with optimized data processing and caching.
-    """
 
-    def __init__(self, ekg_dict: Dict):
-        """
-        Initialize an EKG data object with a dictionary of EKG test data.
-        
-        Args:
-            ekg_dict (Dict): Dictionary containing EKG test data:
-                - id: EKG test identifier
-                - date: Test date
-                - result_link: Path to EKG data file
-                - date_of_birth: Person's birth year
-                - gender: Person's gender
-        """
+    def __init__(self, ekg_dict):
+        """Initialize an EKG data object with a dictionary of person data"""
         self.id = ekg_dict["id"]
         self.date = ekg_dict["date"]
         self.data = ekg_dict["result_link"]
         self.birth_year = ekg_dict["date_of_birth"]
         self.gender = ekg_dict["gender"]
-        
-        # Lazy loading - data loaded only when accessed
-        self._df = None
-        self._peaks_cache = {}
-        
-    @property
-    def df(self) -> pd.DataFrame:
-        """
-        Lazy-loaded EKG data with memory optimization.
-        Uses float32 instead of float64 to reduce memory usage by ~50%.
-        
-        Returns:
-            pd.DataFrame: EKG data with columns ['Messwerte in mV', 'time in ms']
-        """
-        if self._df is None:
-            try:
-                self._df = pd.read_csv(
-                    self.data, 
-                    sep="\t", 
-                    header=None, 
-                    names=["Messwerte in mV", "time in ms"],
-                    dtype={'Messwerte in mV': np.float32, 'time in ms': np.float32}
-                )
-            except FileNotFoundError:
-                raise FileNotFoundError(f"EKG data file not found: {self.data}")
-            except pd.errors.EmptyDataError:
-                raise ValueError(f"EKG data file is empty: {self.data}")
-        
-        return self._df
+        self.df = pd.read_csv(self.data, sep="\t", header=None, names=["Messwerte in mV", "time in ms"])
 
     @staticmethod
-    def load_by_id(ekg_id: int, patients_data: List[Dict]) -> 'EKG_data':
-        """
-        Factory method to load EKG data by ID from patient data list.
-        
-        Args:
-            ekg_id (int): ID of the EKG test to load
-            patients_data (List[Dict]): List of patient data dictionaries
-            
-        Returns:
-            EKG_data: Initialized EKG_data object
-            
-        Raises:
-            ValueError: If EKG with specified ID is not found
-        """
+    def load_by_id(ekg_id, patients_data):
+        """Load EKG data by ID from a patient data list"""
         for person in patients_data:
             for ekg in person.get("ekg_tests", []):
                 if ekg["id"] == ekg_id:
-                    # Merge person data with EKG test data
                     ekg["date_of_birth"] = person["date_of_birth"]
                     ekg["gender"] = person["gender"]
                     return EKG_data(ekg)
-        
-        raise ValueError(f"EKG with ID {ekg_id} not found in database")
-
+        raise ValueError(f"EKG with ID {ekg_id} not found.")
+       
     @staticmethod
-    def find_peaks(series: pd.Series, sampling_rate: int = 500, threshold_factor: float = 1.0, 
-                   window_size: Optional[int] = None, min_rr_interval: float = 0.3, 
-                   max_rr_interval: float = 2.5, adaptive_threshold: bool = True) -> pd.DataFrame:
+    def find_peaks(series, threshold=360, window_size=5, min_peak_distance=200):
         """
-        Find R-peaks in ECG signal using optimized window-based local maximum detection.
-        
-        Args:
-            series: EKG signal data (pandas Series or array)
-            sampling_rate: Sampling rate in Hz (default: 500)
-            threshold_factor: Factor for adaptive threshold (0.0-1.0, default: 0.6)
-            window_size: Window size for local maxima detection (auto if None)
-            min_rr_interval: Minimum RR interval in seconds (default: 0.3s = 200 bpm max)
-            max_rr_interval: Maximum RR interval in seconds (default: 2.0s = 30 bpm min)
-            adaptive_threshold: Whether to use adaptive threshold
-            
-        Returns:
-            pd.DataFrame: DataFrame with columns ['index', 'value', 'rr_interval']
+        Find robust peaks using a window-based local maximum strategy.
         """
         peaks = []
-        
-        # Convert to numpy array for better performance
-        if isinstance(series, pd.Series):
-            values = series.values.astype(np.float32)
-            indices = series.index.values
-        else:
-            values = np.array(series, dtype=np.float32)
-            indices = np.arange(len(series))
-        
-        # Automatic parameter calculation based on sampling rate
-        if window_size is None:
-            window_size = max(5, int(sampling_rate * 0.02))  # 20ms window
-        
-        min_peak_distance = int(min_rr_interval * sampling_rate)
-        max_peak_distance = int(max_rr_interval * sampling_rate)
-        
-        # Adaptive or fixed threshold
-        if adaptive_threshold:
-            signal_max = np.max(values)
-            signal_mean = np.mean(values)
-            threshold = signal_mean + (signal_max - signal_mean) * threshold_factor
-        else:
-            threshold = threshold_factor
-        
         last_index = -min_peak_distance
-        
-        # Optimized peak detection using vectorized operations where possible
-        for i in range(window_size, len(values) - window_size):
+
+        if isinstance(series, pd.Series):
+            values = series.values
+            indices = series.index
+        else:
+            values = series
+            indices = range(len(series))
+
+
+        for i in range(window_size, len(series) - window_size):
             window = values[i - window_size: i + window_size + 1]
             center_value = values[i]
             center_index = indices[i]
-            
-            # Check if center point is local maximum above threshold
-            if center_value == np.max(window) and center_value > threshold:
-                current_distance = center_index - last_index
-                
-                # Check minimum and maximum distance constraints
-                if current_distance >= min_peak_distance:
-                    if current_distance > max_peak_distance and len(peaks) > 0:
-                        print(f"Warning: Large RR interval at index {center_index}: "
-                              f"{current_distance/sampling_rate:.2f}s")
-                    
+
+            # Ist der Mittelpunkt das Maximum im Fenster und über Threshold?
+            if center_value == max(window) and center_value > threshold:
+                if (center_index - last_index) >= min_peak_distance:
                     peaks.append((center_index, center_value))
                     last_index = center_index
-        
-        # Create DataFrame with additional information
-        if len(peaks) > 0:
-            peaks_df = pd.DataFrame(peaks, columns=["index", "value"])
-            
-            # Calculate RR intervals
-            if len(peaks_df) > 1:
-                rr_intervals = np.diff(peaks_df["index"].values) / sampling_rate
-                peaks_df["rr_interval"] = [np.nan] + list(rr_intervals)
-                
-                # Statistics
-                print(f"Found peaks: {len(peaks_df)}")
-                if len(rr_intervals) > 0:
-                    mean_hr = 60 / np.mean(rr_intervals)
-                    print(f"Average heart rate: {mean_hr:.1f} bpm")
-                    print(f"RR interval range: {np.min(rr_intervals):.3f}s - {np.max(rr_intervals):.3f}s")
-            
-            return peaks_df
-        else:
-            print("No peaks found! Check threshold and signal quality.")
-            return pd.DataFrame(columns=["index", "value", "rr_interval"])
 
-    def calc_max_heart_rate(self, year_of_birth: int, gender: str) -> Dict:
-        """
-        Calculate maximum heart rate based on age and gender using established formulas.
-        
-        Args:
-            year_of_birth (int): Birth year of the person
-            gender (str): Gender of the person ('male', 'female', or other)
-            
-        Returns:
-            Dict: Dictionary containing age, gender, and calculated max heart rate
-        """
-        current_age = datetime.now().year - year_of_birth
+        return pd.DataFrame(peaks, columns=["index", "value"])
+   
+    def calc_max_heart_rate(self, year_of_birth, gender):
+        """Berechnet die maximale Herzfrequenz basierend auf Alter und Geschlecht."""
+        age = datetime.now().year - year_of_birth
 
-        # Age-predicted maximum heart rate formulas
         if gender.lower() == "male":
-            max_hr = 220 - current_age  # Tanaka formula for men
+            max_hr = 220 - age
         elif gender.lower() == "female":
-            max_hr = 226 - current_age  # Tanaka formula for women  
+            max_hr = 226 - age  # Alternative Formel für Frauen
         else:
-            max_hr = 223 - current_age  # Gender-neutral average
+            max_hr = 223 - age  # Neutraler Mittelwert, wenn Geschlecht unklar
 
         return {
-            "age": current_age,
+            "age": age,
             "gender": gender,
             "max_hr": max_hr
         }
 
-    def _get_cache_key(self, **kwargs) -> str:
+    def plot_time_series(self, threshold=360, min_peak_distance=200, range_start=None, range_end=None):
         """
-        Generate cache key for peak detection results.
+        Erstellt einen Plotly-Plot der EKG-Zeitreihe
         
-        Returns:
-            str: Cache key based on parameters
+        Parameters:
+        - threshold: Schwellenwert für Peak-Erkennung
+        - min_peak_distance: Mindestabstand zwischen Peaks
+        - range_start: Startzeit in Sekunden (nicht ms!)
+        - range_end: Endzeit in Sekunden (nicht ms!)
         """
-        return str(sorted(kwargs.items()))
-
-    def plot_time_series(self, 
-                        range_start=None, 
-                        range_end=None, 
-                        sampling_rate=500, 
-                        threshold_factor=0.6, 
-                        min_rr_interval=0.3, 
-                        max_rr_interval=2.0, 
-                        adaptive_threshold=True, 
-                        window_size=None,
-                        line_color='#2E86AB', 
-                        peak_color='#F24236',
-                        show_grid=True, 
-                        dark_theme=True):
-
-        # Zeit normalisieren
+        
+        # Zeit in Sekunden normalisieren (ab 0 startend)
         time_seconds = (self.df["time in ms"] - self.df["time in ms"].min()) / 1000
-
-        # Bereich filtern
+        
+        # Bereich filtern falls angegeben
         if range_start is not None and range_end is not None:
             mask = (time_seconds >= range_start) & (time_seconds <= range_end)
+            filtered_time = time_seconds[mask]
+            filtered_data = self.df["Messwerte in mV"][mask]
         else:
-            mask = np.ones(len(time_seconds), dtype=bool)
-
-        filtered_time = time_seconds[mask].reset_index(drop=True)
-        filtered_data = self.df["Messwerte in mV"][mask].reset_index(drop=True)
-
-        # R-Peaks berechnen (aus Cache oder neu)
-        cache_key = self._get_cache_key(
-            sampling_rate=sampling_rate, threshold_factor=threshold_factor,
-            min_rr_interval=min_rr_interval, max_rr_interval=max_rr_interval,
-            adaptive_threshold=adaptive_threshold, window_size=window_size,
-            range_start=range_start, range_end=range_end
-        )
-        if cache_key not in self._peaks_cache:
-            peaks_df = self.find_peaks(
-                self.df["Messwerte in mV"], sampling_rate=sampling_rate,
-                threshold_factor=threshold_factor, window_size=window_size,
-                min_rr_interval=min_rr_interval, max_rr_interval=max_rr_interval,
-                adaptive_threshold=adaptive_threshold
-            )
-            self._peaks_cache[cache_key] = peaks_df
-        else:
-            peaks_df = self._peaks_cache[cache_key]
-
-        # R-Peak-Zeitpunkte im sichtbaren Bereich
-        peak_times, peak_values = [], []
-        for _, row in peaks_df.iterrows():
-            idx = int(row['index'])
-            if idx < len(self.df):
-                t = (self.df["time in ms"].iloc[idx] - self.df["time in ms"].min()) / 1000
-                if range_start is None or (range_start <= t <= range_end):
-                    peak_times.append(t)
-                    peak_values.append(row['value'])
-
-        # Farben
-        bg = 'rgb(17,17,17)' if dark_theme else 'white'
-        font_color = 'white' if dark_theme else 'black'
-        grid_color = 'rgba(128,128,128,0.3)' if dark_theme else 'rgba(128,128,128,0.2)'
-        zeroline_color = 'rgba(128,128,128,0.5)' if dark_theme else 'rgba(128,128,128,0.4)'
-
+            filtered_time = time_seconds
+            filtered_data = self.df["Messwerte in mV"]
+        
         # Plot erstellen
         fig = go.Figure()
-
+        
+        # EKG-Signal
         fig.add_trace(go.Scatter(
             x=filtered_time,
             y=filtered_data,
             mode='lines',
-            line=dict(color=line_color, width=1.5),
-            name='EKG',
-            hovertemplate='Zeit: %{x:.2f}s<br>Amplitude: %{y:.3f} mV<extra></extra>'
+            name='EKG Signal',
+            line=dict(color='blue', width=1)
         ))
-        print(peak_times, peak_values)
-        if peak_times:
-            fig.add_trace(go.Scatter(
-                x=peak_times,
-                y=peak_values,
-                mode='markers',
-                marker=dict(color=peak_color, size=10, symbol='triangle-up', line=dict(color='white', width=1.5)),
-                name='R-Peaks',
-                hovertemplate='R-Peak<br>Zeit: %{x:.2f}s<br>Amplitude: %{y:.3f} mV<extra></extra>'
-            ))
-
+        
+        # Peak-Erkennung (falls gewünscht)
+        if threshold and min_peak_distance:
+            # Hier müssten Sie Ihre Peak-Erkennungslogik anpassen
+            # um mit den gefilterten Daten zu arbeiten
+            pass
+        
+        # Layout anpassen
         fig.update_layout(
+            title='EKG Zeitreihe',
             xaxis_title='Zeit (Sekunden)',
-            yaxis_title='Amplitude (mV)',
-            plot_bgcolor=bg,
-            paper_bgcolor=bg,
-            font=dict(color=font_color),
-            hovermode='x unified',
-            margin=dict(l=60, r=40, t=40, b=60)
+            yaxis_title='Amplitude',
+            hovermode='x unified'
         )
-
-        fig.update_xaxes(showgrid=show_grid, gridcolor=grid_color, zeroline=True, zerolinecolor=zeroline_color)
-        fig.update_yaxes(showgrid=show_grid, gridcolor=grid_color, zeroline=True, zerolinecolor=zeroline_color)
-
+        
         return fig
+        
+    @staticmethod
+    def average_hr(series, sampling_rate=1000, threshold=360, window_size=5, min_peak_distance=200):
+            """
+            Berechnet die durchschnittliche Herzfrequenz (in bpm) aus einem EKG-Signal.
 
+            :param series: pd.Series mit EKG-Daten (Index = Zeit in ms oder Sample-Index)
+            :param sampling_rate: Abtastrate in Hz (z. B. 1000 für 1 kHz)
+            :param threshold: Amplitudenschwelle für Peak-Erkennung (z. B. 360 µV)
+            :param window_size: Fenstergröße für lokale Maxima
+            :param min_peak_distance: Mindestabstand zwischen Peaks (in ms)
+            :return: durchschnittliche Herzfrequenz (float, bpm)
+            """
 
-    def calculate_average_heart_rate(self, range_start: Optional[float] = None, 
-                                   range_end: Optional[float] = None,
-                                   sampling_rate: int = 500, threshold_factor: float = 0.6,
-                                   min_rr_interval: float = 0.3, max_rr_interval: float = 2.0,
-                                   adaptive_threshold: bool = True, window_size: Optional[int] = None,
-                                   outlier_threshold: float = 0.3, min_peaks_required: int = 3) -> Optional[float]:
-        """
-        Calculate average heart rate with robust outlier detection and caching.
-        
-        Args:
-            range_start: Start time in seconds
-            range_end: End time in seconds
-            sampling_rate: Sampling rate in Hz (default: 500)
-            threshold_factor: Factor for adaptive threshold (0.0-1.0, default: 0.6)
-            min_rr_interval: Minimum RR interval in seconds (default: 0.3s)
-            max_rr_interval: Maximum RR interval in seconds (default: 2.0s)
-            adaptive_threshold: Whether to use adaptive threshold
-            window_size: Window size for peak detection (auto if None)
-            outlier_threshold: Threshold for outlier detection (default: 0.3 = 30%)
-            min_peaks_required: Minimum number of R-peaks for reliable calculation
-            
-        Returns:
-            Optional[float]: Average heart rate in bpm, or None if calculation fails
-        """
-        # Normalize time to seconds
-        time_seconds = (self.df["time in ms"] - self.df["time in ms"].min()) / 1000
-        
-        # Filter range if specified
-        if range_start is not None and range_end is not None:
-            mask = (time_seconds >= range_start) & (time_seconds <= range_end)
-            filtered_data = self.df["Messwerte in mV"][mask]
-        else:
-            filtered_data = self.df["Messwerte in mV"]
-        
-        try:
-            # Use cached peak detection if available
-            cache_key = self._get_cache_key(
-                sampling_rate=sampling_rate, threshold_factor=threshold_factor,
-                min_rr_interval=min_rr_interval, max_rr_interval=max_rr_interval,
-                adaptive_threshold=adaptive_threshold, window_size=window_size,
-                range_start=range_start, range_end=range_end
-            )
-            
-            if cache_key in self._peaks_cache:
-                peaks_df = self._peaks_cache[cache_key]
-            else:
-                peaks_df = self.find_peaks(
-                    filtered_data,
-                    sampling_rate=sampling_rate,
-                    threshold_factor=threshold_factor,
-                    window_size=window_size,
-                    min_rr_interval=min_rr_interval,
-                    max_rr_interval=max_rr_interval,
-                    adaptive_threshold=adaptive_threshold
-                )
-                self._peaks_cache[cache_key] = peaks_df
-            
-            # Check minimum number of peaks
-            if len(peaks_df) < min_peaks_required:
-                print(f'Insufficient R-peaks detected ({len(peaks_df)} < {min_peaks_required})')
-                return None
-            
-            # Extract RR intervals
-            if 'rr_interval' in peaks_df.columns:
-                rr_intervals = peaks_df['rr_interval'].dropna().values
-            else:
-                # Calculate RR intervals from peak indices
-                peak_indices = peaks_df['index'].values
-                time_per_sample = 1.0 / sampling_rate
-                peak_times = peak_indices * time_per_sample
-                
-                if len(peak_times) > 1:
-                    rr_intervals = np.diff(peak_times)
-                else:
-                    print('Only one R-peak found. Heart rate cannot be calculated.')
-                    return None
-            
-            # Robust outlier filtering
-            if len(rr_intervals) > 2:
-                # Statistical outlier filter
-                median_rr = np.median(rr_intervals)
-                outlier_bound = outlier_threshold * median_rr
-                valid_mask = np.abs(rr_intervals - median_rr) <= outlier_bound
-                
-                # Physiological limits filter
-                physiological_mask = (rr_intervals >= min_rr_interval) & (rr_intervals <= max_rr_interval)
-                
-                # Combine filters
-                final_mask = valid_mask & physiological_mask
-                valid_rr_intervals = rr_intervals[final_mask]
-            else:
-                valid_rr_intervals = rr_intervals
-            
-            # Calculate average heart rate
-            if len(valid_rr_intervals) > 0:
-                heart_rates = 60.0 / valid_rr_intervals
-                avg_heart_rate = float(np.mean(heart_rates))
-                return avg_heart_rate
-            else:
-                print('All RR intervals were classified as outliers.')
-                return None
-        
-        except Exception as e:
-            print(f'Error in heart rate calculation: {str(e)}')
-            return None
+            peaks_df = EKG_data.find_peaks(series, threshold=threshold,
+                                            window_size=window_size,
+                                            min_peak_distance=min_peak_distance)
 
+            # Zeitachse berechnen (falls nötig)
+            if isinstance(series.index, pd.DatetimeIndex):
+                times_ms = peaks_df["index"].astype("int64") / 1e6  # ns → ms
+            elif isinstance(series.index, pd.Index) and np.issubdtype(series.index.dtype, np.number):
+                times_ms = peaks_df["index"].astype(float)  # Annahme: ms oder Samples
+                if series.index[1] - series.index[0] != 1:
+                    # Umrechnung von Sample-Index zu ms
+                    times_ms = times_ms * (1000 / sampling_rate)
+            else:
+                raise ValueError("Zeitachse nicht interpretierbar.")
+
+            # RR-Intervalle in ms
+            rr_intervals = np.diff(times_ms)
+
+            if len(rr_intervals) == 0:
+                return np.nan  # Nicht genug Peaks gefunden
+
+            # Durchschnittliches RR → HR = 60_000 / ØRR
+            hr_avg = 60000 / np.mean(rr_intervals)
+            return hr_avg
 
 if __name__ == "__main__":
-    """
-    Test module functionality when run directly.
-    """
-    try:
-        # Load test data
-        with open("data/person_db.json", "r", encoding="utf-8") as f:
-            patients_data = json.load(f)
+        #try:
+    # JSON laden
+    with open("data/person_db.json", "r", encoding="utf-8") as f:
+        patients_data = json.load(f)
 
-        print("Testing EKG_data class functionality...")
-        
-        # Test loading EKG data
-        ekg = EKG_data.load_by_id(4, patients_data)
-        print(f"✅ EKG data loaded: ID {ekg.id}, Date: {ekg.date}")
-        print(f"   Data shape: {ekg.df.shape}")
+    print("\n--- Test: EKG laden ---")
+    ekg = EKG_data.load_by_id(3, patients_data)
+    print("Daten geladen:", ekg.df.head())
 
-        # Test peak detection
-        peaks = EKG_data.find_peaks(ekg.df["Messwerte in mV"])
-        print(f"✅ Peak detection completed: {len(peaks)} peaks found")
+    print("\n--- Test: Peaks finden ---")
+    peaks = EKG_data.find_peaks(ekg.df["Messwerte in mV"])
+    print(f"Gefundene Peaks: {len(peaks)} -> Indices: {peaks[:5]}")
 
-        # Test heart rate calculation
-        hr_info = ekg.calc_max_heart_rate(ekg.birth_year, ekg.gender)
-        print(f"✅ Max heart rate calculated: {hr_info}")
+    print("\n--- Test: Maximale Herzfrequenz ---")
+    hr = ekg.calc_max_heart_rate(ekg.birth_year, ekg.gender)
+    print("Geschätzte maximale Herzfrequenz:", hr)
+    print(f"\n✅ Test abgeschlossen – verwendete EKG-Test-ID: {ekg.id}")
 
-        # Test average heart rate
-        avg_hr = ekg.calculate_average_heart_rate()
-        if avg_hr:
-            print(f"✅ Average heart rate: {avg_hr:.1f} bpm")
-        else:
-            print("⚠️ Average heart rate could not be calculated")
+    print("\n--- Plot: EKG mit Peaks ---")
+    ekg.plot_time_series(threshold=360, min_peak_distance=200, range_start=1000, range_end=20000)
 
-        print("✅ All tests completed successfully")
+    print("\n--- Test: Durchschnittliche Herzfrequenz berechnen ---")
+    hr_avg = EKG_data.average_hr(ekg.df["Messwerte in mV"], sampling_rate=1000,
+                                 threshold=360, window_size=5, min_peak_distance=200)
+    print(f"Durchschnittliche Herzfrequenz: {hr_avg:.1f} bpm")
 
-    except Exception as e:
-        print(f"❌ Error during testing: {e}")
+
+    #except Exception as e:
+    #print("❌ Fehler beim Testen:", e)
