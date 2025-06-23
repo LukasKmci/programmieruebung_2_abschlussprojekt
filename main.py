@@ -219,32 +219,54 @@ elif selected_page == "Trainings":
             st.write(f"**Verfügbare EKG-Tests:** {len(person.get('ekg_tests', []))}")
 
     st.markdown("---")
+    st.header("📊 Zeitauswahl des Trainings")
+    st.slider("Wähle den Zeitraum", min_value=0, max_value=100, value=(20, 80), step=1)
+    
+    st.markdown("---")
     st.header("📊 Trainingsdaten")
-    col1, col2, col3, col4, col5 = st.columns(5)
+    st.write("Die angezeigten Daten sind basiernd auf der Zeitauswahl")
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         st.metric("Distanz", "10 km") # Beispielwert
 
     with col2:
-        st.metric("Bewegungszeit", "45 min") # Beispielwert
+        st.metric("Gesammt Zeit", "1h 45 min") # Beispielwert
 
     with col3:
-        st.metric("Höhenmeter", "300 m") # Beispielwert
+        st.metric("durchschnittliche Geschwindigkeit", "25km/h") # Beispielwert
 
     with col4:
-        st.metric("durchschnittliche Geschwindigkeit", "13 km/h") # Beispielwert
+        st.metric("durchschnittliche Herzfrequenz", "140bpm") # Beispielwert
 
-    with col5:
-        st.metric("Kalorienverbrauch", "600 kcal") # Beispielwert
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.metric("durchschnittliche Herzfrequenz", "145 bpm") # Beispielwert
+        st.metric("Höhenmeter", "300m") # Beispielwert
 
     with col2:
-        st.metric("maximale Herzfrequenz", "180 bpm") # Beispielwert
+        st.metric("Bewegungszeit", "45min") # Beispielwert
 
+    with col3:
+        st.metric("max. Geschwindigkeit", "60km/h") # Beispielwert
+
+    with col4:
+        st.metric("max. Herzfrequenz", "185bpm") # Beispielwert
+
+    st.markdown("---")
+    st.header("📊 Grafische Darstellung")
+    st.selectbox("Bitte wähle den gewünschten Parameter!", ["Herzfrequenz", "Distanz", "Höhenmeter"])
+    
+    if selected_page == "Herzfrequenz":
+        st.plotly_chart
+
+    elif selected_page == "Distanz":
+        st.plotly_chart
+
+    elif selected_page == "Höhenmeter":
+        st.plotly_chart
+        st.write("3") #Test
 # Footer
 st.markdown("---")
-st.caption("EKG & Sports Analyse Dashboard | Version 2.1 | Lukas Köhler | Simon Krainer")                
+st.caption("EKG & Sports Analyse Dashboard | Version 2.1 | Lukas Köhler | Simon Krainer")
