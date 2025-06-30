@@ -1,353 +1,589 @@
-# database_auth.py - Enhanced version with Person integration
+# database_auth.py - Enhanced Authentication and User Management Module
 import sqlite3
-import streamlit_authenticator as stauth
-import pandas as pd
-from datetime import datetime
 import hashlib
+import secrets
+from datetime import datetime
+from typing import Dict, List, Tuple, Optional, Any
+import streamlit as st
+import pandas as pd
 import os
+from PIL import Image
+import io
 
 class DatabaseAuth:
-    def __init__(self, db_path="ekg_users.db"):
-        self.db_path = db_path
-        self.init_database()
+    """
+    Enhanced Authentication and User Management Class for EKG Dashboard
+    Handles user authentication, registration, profile management, and database operations
+    Compatible with both personen.db and ekg_database.db structures
+    """
     
-    def init_database(self):
-        """Erstellt die User-Tabelle mit Person-Attributen"""
+    def __init__(self, db_path: str = "personen.db"):
+        """
+        Initialize the DatabaseAuth class
+        
+        Args:
+            db_path (str): Path to the SQLite database file
+        """
+        self.db_path = db_path
+        self.init_auth_tables()
+    
+    def get_db_connection(self) -> sqlite3.Connection:
+        """Create and return a database connection"""
         conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row  # Enable dict-like access to rows
+        return conn
+    
+    def init_auth_tables(self):
+        """
+        Initialize authentication tables in the database
+        Creates users table with all necessary fields including profile picture support
+        """
+        conn = self.get_db_connection()
         cursor = conn.cursor()
         
-        # Enhanced Users Tabelle mit Person-Attributen
+        # Create comprehensive users table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
                 password TEXT NOT NULL,
-                email TEXT UNIQUE NOT NULL,
+                email TEXT NOT NULL,
                 full_name TEXT NOT NULL,
-                role TEXT DEFAULT 'user',
-                
-                -- Person-spezifische Felder
                 firstname TEXT,
                 lastname TEXT,
-                date_of_birth DATE,
-                gender TEXT CHECK(gender IN ('male', 'female', 'other')),
-                picture_path TEXT,
-                
-                -- Medizinische/Sportliche Zusatzdaten (optional)
+                date_of_birth TEXT,
+                gender TEXT,
                 height_cm INTEGER,
                 weight_kg REAL,
-                medical_notes TEXT,
-                emergency_contact TEXT,
-                
-                -- System-Felder
+                picture_path TEXT,
+                picture_data BLOB,
+                role TEXT DEFAULT 'user',
+                is_active BOOLEAN DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_login TIMESTAMP,
-                is_active BOOLEAN DEFAULT TRUE,
-                
-                -- Person-ID für Verknüpfung mit EKG-Daten
-                person_data_id TEXT UNIQUE
+                person_id INTEGER
             )
         ''')
         
-        # EKG-Tests Tabelle für bessere Datenverknüpfung
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ekg_tests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                test_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                test_name TEXT,
-                file_path TEXT,
-                result_data TEXT,  -- JSON string mit Analyseergebnissen
-                notes TEXT,
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            )
-        ''')
-        
-        # Admin-User erstellen falls nicht vorhanden
-        admin_exists = cursor.execute(
-            "SELECT COUNT(*) FROM users WHERE username = 'admin'"
-        ).fetchone()[0]
-        
-        if admin_exists == 0:
-            admin_password = stauth.Hasher(['admin123']).generate()[0]
+        # Check if admin user exists, if not create default admin
+        cursor.execute("SELECT COUNT(*) FROM users WHERE username = 'admin'")
+        if cursor.fetchone()[0] == 0:
+            # Create default admin user with hashed password
+            admin_password = self._hash_password_simple("admin123")
+            
             cursor.execute('''
-                INSERT INTO users (
-                    username, password, email, full_name, role,
-                    firstname, lastname, date_of_birth, gender,
-                    person_data_id
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                'admin', admin_password, 'admin@sportmedizin.de', 
-                'Dr. Admin Sportmediziner', 'admin',
-                'Admin', 'Sportmediziner', '1980-01-01', 'other',
-                'admin_person_id'
-            ))
+                INSERT INTO users (username, password, email, full_name, role)
+                VALUES (?, ?, ?, ?, ?)
+            ''', ("admin", admin_password, "admin@ekg-dashboard.com", "Administrator", "admin"))
+            
+            print("✅ Default admin user created: username='admin', password='admin123'")
         
         conn.commit()
         conn.close()
     
-    def get_all_users(self):
-        """Holt alle User aus der Datenbank für streamlit-authenticator"""
-        conn = sqlite3.connect(self.db_path)
+    def _hash_password_simple(self, password: str) -> str:
+        """
+        Simple password hashing using SHA-256 (compatible with existing system)
         
-        query = '''
-            SELECT username, password, email, full_name, role 
-            FROM users 
-            WHERE is_active = TRUE
-        '''
+        Args:
+            password (str): Plain text password
+            
+        Returns:
+            str: Hashed password
+        """
+        return hashlib.sha256(password.encode()).hexdigest()
+    
+    def _verify_password_simple(self, password: str, password_hash: str) -> bool:
+        """
+        Verify a password against its hash
         
-        df = pd.read_sql_query(query, conn)
+        Args:
+            password (str): Plain text password to verify
+            password_hash (str): Stored password hash
+            
+        Returns:
+            bool: True if password is correct
+        """
+        return self._hash_password_simple(password) == password_hash
+    
+    def create_user(self, user_data: Dict[str, Any], picture_file=None) -> Tuple[bool, str]:
+        """
+        Create a new user account with profile picture support
+        
+        Args:
+            user_data (Dict): User data dictionary
+            picture_file: Uploaded picture file (optional)
+            
+        Returns:
+            Tuple[bool, str]: Success status and message
+        """
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Check if username already exists
+            cursor.execute("SELECT username FROM users WHERE username = ?", (user_data['username'],))
+            if cursor.fetchone():
+                return False, "Benutzername bereits vergeben!"
+            
+            # Handle picture upload
+            picture_path = None
+            picture_data = None
+            
+            if picture_file is not None:
+                # Create pictures directory if it doesn't exist
+                pictures_dir = "user_pictures"
+                os.makedirs(pictures_dir, exist_ok=True)
+                
+                # Save picture file
+                picture_filename = f"{user_data['username']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+                picture_path = os.path.join(pictures_dir, picture_filename)
+                
+                # Convert and save image
+                image = Image.open(picture_file)
+                # Resize image to reasonable size
+                image.thumbnail((300, 300), Image.Resampling.LANCZOS)
+                image.save(picture_path, "JPEG")
+                
+                # Also store as BLOB in database
+                img_byte_arr = io.BytesIO()
+                image.save(img_byte_arr, format='JPEG')
+                picture_data = img_byte_arr.getvalue()
+            
+            # Hash password
+            hashed_password = self._hash_password_simple(user_data['password'])
+            
+            # Insert user
+            cursor.execute('''
+                INSERT INTO users (
+                    username, password, email, full_name, firstname, lastname,
+                    date_of_birth, gender, height_cm, weight_kg, picture_path, 
+                    picture_data, role, is_active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                user_data['username'],
+                hashed_password,
+                user_data['email'],
+                user_data['full_name'],
+                user_data.get('firstname', ''),
+                user_data.get('lastname', ''),
+                user_data.get('date_of_birth', ''),
+                user_data.get('gender', ''),
+                user_data.get('height_cm', 0),
+                user_data.get('weight_kg', 0.0),
+                picture_path,
+                picture_data,
+                user_data.get('role', 'user'),
+                True
+            ))
+            
+            conn.commit()
+            conn.close()
+            
+            return True, f"Benutzer '{user_data['username']}' erfolgreich erstellt!"
+            
+        except sqlite3.IntegrityError:
+            conn.close()
+            return False, "Benutzername bereits vergeben!"
+        except Exception as e:
+            conn.close()
+            return False, f"Fehler beim Erstellen des Benutzers: {str(e)}"
+    
+    def authenticate_user(self, username: str, password: str) -> Optional[Dict[str, Any]]:
+        """
+        Authenticate a user
+        
+        Args:
+            username (str): Username
+            password (str): Password
+            
+        Returns:
+            Optional[Dict]: User data if authentication successful, None otherwise
+        """
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT * FROM users WHERE username = ? AND is_active = 1', (username,))
+        user = cursor.fetchone()
+        
         conn.close()
         
-        # Format für streamlit-authenticator
-        credentials = {'usernames': {}}
+        if user and self._verify_password_simple(password, user['password']):
+            return {
+                'id': user['id'],
+                'username': user['username'],
+                'email': user['email'],
+                'full_name': user['full_name'],
+                'firstname': user['firstname'],
+                'lastname': user['lastname'],
+                'role': user['role'],
+                'picture_data': user['picture_data'],
+                'date_of_birth': user['date_of_birth'],
+                'gender': user['gender'],
+                'height_cm': user['height_cm'],
+                'weight_kg': user['weight_kg']
+            }
         
-        for _, row in df.iterrows():
-            credentials['usernames'][row['username']] = {
-                'password': row['password'],
-                'email': row['email'],
-                'name': row['full_name'],
-                'role': row['role']
+        return None
+    
+    def get_all_users_for_auth(self) -> Dict[str, Dict]:
+        """
+        Get all users in format required by streamlit-authenticator
+        
+        Returns:
+            Dict: Users data in authenticator format
+        """
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT username, password, full_name, email, role FROM users WHERE is_active = 1')
+        users = cursor.fetchall()
+        
+        conn.close()
+        
+        credentials = {
+            'usernames': {}
+        }
+        
+        for user in users:
+            credentials['usernames'][user['username']] = {
+                'password': user['password'],
+                'name': user['full_name'],
+                'email': user['email'],
+                'role': user['role']
             }
         
         return credentials
     
-    def create_user(self, username, password, email, full_name, role='user', 
-                   firstname=None, lastname=None, date_of_birth=None, 
-                   gender=None, height_cm=None, weight_kg=None):
-        """Neuen User mit Person-Daten erstellen"""
-        conn = sqlite3.connect(self.db_path)
+    def get_user_by_username(self, username: str) -> Optional[sqlite3.Row]:
+        """
+        Get user data by username
+        
+        Args:
+            username (str): Username to look up
+            
+        Returns:
+            Optional[sqlite3.Row]: User data if found
+        """
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
+        user = cursor.fetchone()
+        
+        conn.close()
+        return user
+    
+    def update_last_login(self, username: str):
+        """
+        Update the last login timestamp for a user
+        
+        Args:
+            username (str): Username to update
+        """
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            'UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE username = ?',
+            (username,)
+        )
+        
+        conn.commit()
+        conn.close()
+    
+    def get_users_for_admin(self) -> pd.DataFrame:
+        """
+        Get all users data for admin management
+        
+        Returns:
+            pd.DataFrame: Users data
+        """
+        conn = self.get_db_connection()
+        
+        query = '''
+            SELECT 
+                id,
+                username,
+                email,
+                full_name,
+                firstname,
+                lastname,
+                date_of_birth,
+                gender,
+                height_cm,
+                weight_kg,
+                role,
+                is_active,
+                created_at,
+                last_login,
+                picture_data,
+                picture_path
+            FROM users
+            ORDER BY created_at DESC
+        '''
+        
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+        return df
+    
+    def get_user_stats(self) -> Dict[str, Any]:
+        """
+        Get user statistics for admin dashboard
+        
+        Returns:
+            Dict: User statistics
+        """
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Total users
+        cursor.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
+        total_users = cursor.fetchone()[0]
+        
+        # Users by role
+        cursor.execute("SELECT role, COUNT(*) as count FROM users WHERE is_active = 1 GROUP BY role")
+        roles = cursor.fetchall()
+        by_role = {role['role']: role['count'] for role in roles}
+        
+        # Recent logins (last 7 days)
+        cursor.execute('''
+            SELECT COUNT(*) FROM users 
+            WHERE last_login >= datetime('now', '-7 days') AND is_active = 1
+        ''')
+        recent_logins = cursor.fetchone()[0]
+        
+        # Users with pictures
+        cursor.execute("SELECT COUNT(*) FROM users WHERE picture_data IS NOT NULL AND is_active = 1")
+        users_with_pictures = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        return {
+            'total_users': total_users,
+            'by_role': by_role,
+            'recent_logins': recent_logins,
+            'users_with_pictures': users_with_pictures
+        }
+    
+    def deactivate_user(self, username: str) -> Tuple[bool, str]:
+        """
+        Deactivate a user (soft delete)
+        
+        Args:
+            username (str): Username to deactivate
+            
+        Returns:
+            Tuple[bool, str]: Success status and message
+        """
+        if username == 'admin':
+            return False, "Admin-Benutzer kann nicht deaktiviert werden!"
+        
+        conn = self.get_db_connection()
         cursor = conn.cursor()
         
         try:
-            # Passwort hashen
-            hashed_password = stauth.Hasher([password]).generate()[0]
+            cursor.execute("UPDATE users SET is_active = 0 WHERE username = ?", (username,))
             
-            # Person-ID generieren (eindeutig für EKG-Daten-Verknüpfung)
-            person_data_id = f"{username}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            if cursor.rowcount > 0:
+                conn.commit()
+                conn.close()
+                return True, f"Benutzer '{username}' wurde deaktiviert."
+            else:
+                conn.close()
+                return False, "Benutzer nicht gefunden!"
+                
+        except sqlite3.Error as e:
+            conn.close()
+            return False, f"Fehler beim Deaktivieren: {str(e)}"
+    
+    def activate_user(self, username: str) -> Tuple[bool, str]:
+        """
+        Activate a user
+        
+        Args:
+            username (str): Username to activate
             
-            # Namen aufteilen falls nicht separat angegeben
-            if not firstname and not lastname and full_name:
-                name_parts = full_name.strip().split()
-                firstname = name_parts[0] if len(name_parts) > 0 else ""
-                lastname = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+        Returns:
+            Tuple[bool, str]: Success status and message
+        """
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("UPDATE users SET is_active = 1 WHERE username = ?", (username,))
             
-            cursor.execute('''
-                INSERT INTO users (
-                    username, password, email, full_name, role,
-                    firstname, lastname, date_of_birth, gender,
-                    height_cm, weight_kg, person_data_id
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                username, hashed_password, email, full_name, role,
-                firstname, lastname, date_of_birth, gender,
-                height_cm, weight_kg, person_data_id
-            ))
+            if cursor.rowcount > 0:
+                conn.commit()
+                conn.close()
+                return True, f"Benutzer '{username}' wurde aktiviert."
+            else:
+                conn.close()
+                return False, "Benutzer nicht gefunden!"
+                
+        except sqlite3.Error as e:
+            conn.close()
+            return False, f"Fehler beim Aktivieren: {str(e)}"
+    
+    def change_user_role(self, username: str, new_role: str) -> Tuple[bool, str]:
+        """
+        Change a user's role
+        
+        Args:
+            username (str): Username
+            new_role (str): New role (user/admin)
+            
+        Returns:
+            Tuple[bool, str]: Success status and message
+        """
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("UPDATE users SET role = ? WHERE username = ?", (new_role, username))
+            
+            if cursor.rowcount > 0:
+                conn.commit()
+                conn.close()
+                return True, f"Rolle für '{username}' wurde zu '{new_role}' geändert."
+            else:
+                conn.close()
+                return False, "Benutzer nicht gefunden!"
+                
+        except sqlite3.Error as e:
+            conn.close()
+            return False, f"Fehler beim Ändern der Rolle: {str(e)}"
+    
+    def update_user_profile(self, username: str, profile_data: Dict[str, Any], 
+                           picture_file=None) -> Tuple[bool, str]:
+        """
+        Update user profile information
+        
+        Args:
+            username (str): Username to update
+            profile_data (Dict): New profile data
+            picture_file: New picture file (optional)
+            
+        Returns:
+            Tuple[bool, str]: Success status and message
+        """
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Handle picture upload if provided
+            picture_path = None
+            picture_data = None
+            
+            if picture_file is not None:
+                pictures_dir = "user_pictures"
+                os.makedirs(pictures_dir, exist_ok=True)
+                
+                picture_filename = f"{username}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+                picture_path = os.path.join(pictures_dir, picture_filename)
+                
+                image = Image.open(picture_file)
+                image.thumbnail((300, 300), Image.Resampling.LANCZOS)
+                image.save(picture_path, "JPEG")
+                
+                img_byte_arr = io.BytesIO()
+                image.save(img_byte_arr, format='JPEG')
+                picture_data = img_byte_arr.getvalue()
+            
+            # Build update query
+            update_fields = []
+            params = []
+            
+            for field, value in profile_data.items():
+                if field != 'username':  # Don't update username
+                    update_fields.append(f"{field} = ?")
+                    params.append(value)
+            
+            if picture_path:
+                update_fields.extend(["picture_path = ?", "picture_data = ?"])
+                params.extend([picture_path, picture_data])
+            
+            if update_fields:
+                params.append(username)
+                query = f"UPDATE users SET {', '.join(update_fields)} WHERE username = ?"
+                cursor.execute(query, params)
+                
+                conn.commit()
+                conn.close()
+                return True, "Profil erfolgreich aktualisiert!"
+            else:
+                conn.close()
+                return False, "Keine Änderungen vorgenommen."
+                
+        except Exception as e:
+            conn.close()
+            return False, f"Fehler beim Aktualisieren des Profils: {str(e)}"
+    
+    def get_database_info(self) -> Dict[str, Any]:
+        """
+        Get database information for admin dashboard
+        
+        Returns:
+            Dict: Database information
+        """
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get table structure
+        cursor.execute("PRAGMA table_info(users)")
+        columns = cursor.fetchall()
+        
+        # Get database file size
+        db_size = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
+        
+        # Get recent activity
+        cursor.execute('''
+            SELECT username, full_name, created_at, last_login 
+            FROM users 
+            ORDER BY created_at DESC 
+            LIMIT 10
+        ''')
+        recent_activity = cursor.fetchall()
+        
+        conn.close()
+        
+        return {
+            'columns': [dict(col) for col in columns],
+            'db_size_mb': round(db_size / (1024 * 1024), 2),
+            'recent_activity': [dict(row) for row in recent_activity],
+            'db_path': self.db_path
+        }
+    
+    def change_password(self, username: str, old_password: str, new_password: str) -> Tuple[bool, str]:
+        """
+        Change user password
+        
+        Args:
+            username (str): Username
+            old_password (str): Current password
+            new_password (str): New password
+            
+        Returns:
+            Tuple[bool, str]: Success status and message
+        """
+        # First verify old password
+        user = self.authenticate_user(username, old_password)
+        if not user:
+            return False, "Aktuelles Passwort ist falsch!"
+        
+        # Update password
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        try:
+            new_password_hash = self._hash_password_simple(new_password)
+            cursor.execute("UPDATE users SET password = ? WHERE username = ?", 
+                         (new_password_hash, username))
             
             conn.commit()
-            return True, "Benutzer erfolgreich erstellt!"
-            
-        except sqlite3.IntegrityError as e:
-            if "username" in str(e):
-                return False, "Benutzername bereits vergeben!"
-            elif "email" in str(e):
-                return False, "E-Mail bereits registriert!"
-            else:
-                return False, f"Fehler: {str(e)}"
-        except Exception as e:
-            return False, f"Unbekannter Fehler: {str(e)}"
-        finally:
             conn.close()
-    
-    def get_person_data_by_username(self, username):
-        """Holt Person-Daten für einen User (für EKG-Integration)"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT 
-                firstname, lastname, full_name, date_of_birth, 
-                gender, picture_path, height_cm, weight_kg,
-                person_data_id, email
-            FROM users 
-            WHERE username = ? AND is_active = TRUE
-        ''', (username,))
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            return {
-                'firstname': result[0],
-                'lastname': result[1], 
-                'full_name': result[2],
-                'date_of_birth': result[3],
-                'gender': result[4],
-                'picture_path': result[5] or 'data/pictures/default.jpg',
-                'height_cm': result[6],
-                'weight_kg': result[7],
-                'person_data_id': result[8],
-                'email': result[9]
-            }
-        return None
-    
-    def get_users_person_list(self, current_user_role, current_username):
-        """Gibt Person-Liste basierend auf Benutzerrolle zurück"""
-        conn = sqlite3.connect(self.db_path)
-        
-        if current_user_role == 'admin':
-            # Admin sieht alle Personen
-            query = '''
-                SELECT full_name, username, person_data_id 
-                FROM users 
-                WHERE is_active = TRUE 
-                ORDER BY full_name
-            '''
-            df = pd.read_sql_query(query, conn)
-        else:
-            # User sieht nur eigene Daten
-            query = '''
-                SELECT full_name, username, person_data_id 
-                FROM users 
-                WHERE username = ? AND is_active = TRUE
-            '''
-            df = pd.read_sql_query(query, conn, params=[current_username])
-        
-        conn.close()
-        return df['full_name'].tolist()
-    
-    def update_user_picture(self, username, picture_path):
-        """Profilbild-Pfad aktualisieren"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            UPDATE users 
-            SET picture_path = ? 
-            WHERE username = ?
-        ''', (picture_path, username))
-        
-        conn.commit()
-        conn.close()
-    
-    def add_ekg_test(self, username, test_name, file_path, result_data=None, notes=None):
-        """EKG-Test zu User hinzufügen"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # User-ID holen
-        user_id = cursor.execute(
-            "SELECT id FROM users WHERE username = ?", (username,)
-        ).fetchone()[0]
-        
-        cursor.execute('''
-            INSERT INTO ekg_tests (user_id, test_name, file_path, result_data, notes)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, test_name, file_path, result_data, notes))
-        
-        conn.commit()
-        conn.close()
-    
-    def get_user_ekg_tests(self, username):
-        """Alle EKG-Tests eines Users"""
-        conn = sqlite3.connect(self.db_path)
-        
-        query = '''
-            SELECT e.id, e.test_date, e.test_name, e.file_path, e.notes
-            FROM ekg_tests e
-            JOIN users u ON e.user_id = u.id
-            WHERE u.username = ? AND u.is_active = TRUE
-            ORDER BY e.test_date DESC
-        '''
-        
-        df = pd.read_sql_query(query, conn, params=[username])
-        conn.close()
-        return df
-    
-    def update_last_login(self, username):
-        """Letzten Login aktualisieren"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            UPDATE users 
-            SET last_login = CURRENT_TIMESTAMP 
-            WHERE username = ?
-        ''', (username,))
-        
-        conn.commit()
-        conn.close()
-    
-    def delete_user(self, username):
-        """User löschen (soft delete)"""
-        if username == 'admin':
-            return False, "Admin kann nicht gelöscht werden!"
-        
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            UPDATE users 
-            SET is_active = FALSE 
-            WHERE username = ?
-        ''', (username,))
-        
-        conn.commit()
-        conn.close()
-        return True, f"Benutzer {username} wurde gelöscht!"
-    
-    def get_user_stats(self):
-        """User-Statistiken für Admin-Dashboard"""
-        conn = sqlite3.connect(self.db_path)
-        
-        stats = {}
-        cursor = conn.cursor()
-        
-        # Gesamtanzahl aktive User
-        stats['total_users'] = cursor.execute(
-            "SELECT COUNT(*) FROM users WHERE is_active = TRUE"
-        ).fetchone()[0]
-        
-        # User nach Rolle
-        role_stats = cursor.execute('''
-            SELECT role, COUNT(*) as count 
-            FROM users 
-            WHERE is_active = TRUE 
-            GROUP BY role
-        ''').fetchall()
-        
-        stats['by_role'] = dict(role_stats)
-        
-        # EKG-Tests Statistiken
-        stats['total_ekg_tests'] = cursor.execute(
-            "SELECT COUNT(*) FROM ekg_tests"
-        ).fetchone()[0]
-        
-        # Kürzlich aktive User (letzte 7 Tage)
-        stats['recent_logins'] = cursor.execute('''
-            SELECT COUNT(*) FROM users 
-            WHERE last_login >= datetime('now', '-7 days')
-            AND is_active = TRUE
-        ''').fetchone()[0]
-        
-        conn.close()
-        return stats
-    
-    def get_users_for_admin(self):
-        """Alle User-Details für Admin-Ansicht"""
-        conn = sqlite3.connect(self.db_path)
-        
-        df = pd.read_sql_query('''
-            SELECT 
-                username, email, full_name, role, 
-                firstname, lastname, date_of_birth, gender,
-                created_at, last_login, is_active,
-                (SELECT COUNT(*) FROM ekg_tests WHERE user_id = users.id) as ekg_count
-            FROM users 
-            ORDER BY created_at DESC
-        ''', conn)
-        
-        conn.close()
-        return df
+            return True, "Passwort erfolgreich geändert!"
+            
+        except Exception as e:
+            conn.close()
+            return False, f"Fehler beim Ändern des Passworts: {str(e)}"
