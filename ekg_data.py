@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 import plotly.io as pio
 pio.renderers.default = "browser"
 from datetime import datetime
+import sqlite3
 
 
 class EKG_data:
@@ -29,6 +30,39 @@ class EKG_data:
                     ekg["gender"] = person["gender"]
                     return EKG_data(ekg)
         raise ValueError(f"EKG with ID {ekg_id} not found.")
+    
+    @staticmethod
+    def load_by_id_from_db(ekg_id):
+        """Lädt EKG-Daten anhand der EKG-ID direkt aus der Datenbank."""
+        conn = sqlite3.connect("personen.db")
+        cursor = conn.cursor()
+
+        # Hole EKG-Eintrag
+        cursor.execute("SELECT id, user_id, date, result_link FROM ekg_tests WHERE id = ?", (ekg_id,))
+        ekg_row = cursor.fetchone()
+
+        if not ekg_row:
+            raise ValueError(f"EKG mit ID {ekg_id} nicht gefunden.")
+
+        # Hole Benutzerdaten (für Geburtsjahr und Geschlecht)
+        user_id = ekg_row[1]
+        cursor.execute("SELECT date_of_birth, gender FROM users WHERE id = ?", (user_id,))
+        user_row = cursor.fetchone()
+
+        conn.close()
+
+        if not user_row:
+            raise ValueError(f"Benutzer mit ID {user_id} nicht gefunden.")
+
+        ekg_dict = {
+            "id": ekg_row[0],
+            "date": ekg_row[2],
+            "result_link": ekg_row[3],
+            "date_of_birth": user_row[0],
+            "gender": user_row[1]
+        }
+
+        return EKG_data(ekg_dict)
        
     @staticmethod
     def find_peaks(series, threshold=360, window_size=5, min_peak_distance=200):

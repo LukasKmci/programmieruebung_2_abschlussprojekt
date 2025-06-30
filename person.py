@@ -1,4 +1,5 @@
 import json
+import sqlite3
 
 class Person:
 
@@ -27,6 +28,70 @@ class Person:
                 return person
         # If no person is found, return None
         return None
+    
+    @staticmethod
+    def load_person_data_from_db():
+        conn = sqlite3.connect("personen.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, firstname, lastname, date_of_birth, gender, picture_path FROM users")
+        rows = cursor.fetchall()
+        conn.close()
+
+        persons = []
+        for row in rows:
+            person = {
+                "id": row[0],
+                "firstname": row[1],
+                "lastname": row[2],
+                "date_of_birth": row[3],
+                "gender": row[4],
+                "picture_path": row[5],
+                "ekg_tests": []  # optional leer
+            }
+            persons.append(person)
+        return persons
+    
+    @staticmethod
+    def find_person_data_by_name_from_db(name_search):
+        conn = sqlite3.connect("personen.db")
+        cursor = conn.cursor()
+
+        # hole Benutzer
+        cursor.execute("SELECT id, firstname, lastname, date_of_birth, gender, picture_path FROM users")
+        rows = cursor.fetchall()
+
+        for row in rows:
+            fullname = f"{row[2]} {row[1]}"  # Nachname Vorname
+            if fullname == name_search:
+                person_id = row[0]
+                person = {
+                    "id": person_id,
+                    "firstname": row[1],
+                    "lastname": row[2],
+                    "date_of_birth": row[3],
+                    "gender": row[4],
+                    "picture_path": row[5],
+                    "ekg_tests": []
+                }
+
+                # hole EKG-Tests zur Person
+                cursor.execute("SELECT id, date, result_link FROM ekg_tests WHERE user_id = ?", (person_id,))
+                ekg_rows = cursor.fetchall()
+
+                for ekg in ekg_rows:
+                    person["ekg_tests"].append({
+                        "id": ekg[0],
+                        "date": ekg[1],
+                        "result_link": ekg[2]
+                    })
+
+                conn.close()
+                return person
+
+        conn.close()
+        return None
+
+
     
     
     def _init_(self, person_dict):

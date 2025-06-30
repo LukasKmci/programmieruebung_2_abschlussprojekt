@@ -1,9 +1,17 @@
 # main.py
 import streamlit as st
+import sqlite3
+import uuid
+import time
 import pandas as pd
 from person import Person
 from ekg_data import EKG_data
+from datetime import datetime
+import plotly.graph_objects as go
+import numpy as np
 import os
+from PIL import Image, ExifTags
+from sport_data import load_sports_data, filter_data_by_time_range, calculate_filtered_stats, format_duration, load_sports_data
 
 st.set_page_config(
     page_title="EKG & Sports Analyse Dashboard",
@@ -15,10 +23,10 @@ st.set_page_config(
 # sidebar for main navigation
 with st.sidebar:
     st.sidebar.header("Navigation")
-    selected_page = st.selectbox("Wähle eine Seite", ["EKG Analyse", "Trainings"])
+    selected_page = st.selectbox("Wähle eine Seite", ["EKG Analyse", "Trainings", "👤 Benutzer anlegen", "📥 FIT-Import", "📂 FIT-Dateien anzeigen"])
 
     # Personen laden
-    persons_data = Person.load_person_data()
+    persons_data = Person.load_person_data_from_db()
     person_names = Person.get_person_list(persons_data)
 
     # Auswahl der Versuchsperson
@@ -29,7 +37,7 @@ if selected_page == "EKG Analyse":
         st.markdown("---")
 
         if selected_name:
-            person = Person.find_person_data_by_name(selected_name)
+            person = Person.find_person_data_by_name_from_db(selected_name)
 
     
         # Personeninformationen anzeigen
@@ -61,7 +69,7 @@ if selected_page == "EKG Analyse":
             selected_ekg_id = st.selectbox("📊EKG-Datensatz wählen", ekg_ids)
 
             if selected_ekg_id:
-                ekg_obj = EKG_data.load_by_id(int(selected_ekg_id), persons_data)
+                ekg_obj = EKG_data.load_by_id_from_db(int(selected_ekg_id))
 
                 # Max. Herzfrequenz und durchschnittliche Herzfrequenz berechnen
                 hr_info = ekg_obj.calc_max_heart_rate(ekg_obj.birth_year, ekg_obj.gender)
@@ -189,84 +197,360 @@ if selected_page == "EKG Analyse":
                 except Exception as e:
                     st.error(f"Fehler beim Erstellen des Plots: {e}")
 
+# main.py
 # Seite der Trainings
 elif selected_page == "Trainings":
     st.title("🏋️‍♂️ Trainingsübersicht")
     st.markdown("---")
-    
-    if selected_name:
-            person = Person.find_person_data_by_name(selected_name)
 
-    
-        # Personeninformationen anzeigen
+    # Lade Benutzer aus SQLite
+    person = Person.find_person_data_by_name_from_db(selected_name)
+    if person is None:
+        st.error("❌ Benutzer nicht gefunden!")
+        st.stop()
+
+    # Personeninformationen anzeigen
     st.header("👤 Personeninformationen")
-        
     col1, col2 = st.columns([2, 2])
+
+    with col1:
+        if os.path.exists(person["picture_path"]):
+            st.image(person["picture_path"], caption=selected_name, width=150)
+        else:
+            st.warning("Kein Bild gefunden.")
+
+    with col2:
+        st.write(f"**Name:** {selected_name}")
+        st.write(f"**Geburtsjahr:** {person['date_of_birth']}")
+        st.write(f"**Geschlecht:** {person['gender']}")
+
+    st.markdown("---")
+
+    # Lade zugeordnete .fit-Dateien aus SQLite
+    conn = sqlite3.connect("personen.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT file_name, timestamp FROM sports_sessions
+        WHERE user_id = ?
+        ORDER BY timestamp DESC
+    """, (person["id"],))
+    user_files = cursor.fetchall()
+    conn.close()
+
+    if not user_files:
+        st.warning("📭 Keine .fit-Dateien für diesen Benutzer.")
+        st.stop()
+
+    file_labels = [f"{f[0]} – {f[1][:19]}" for f in user_files]
+    selected_label = st.selectbox("📁 Wähle eine .fit-Datei", file_labels)
+    selected_file = selected_label.split(" – ")[0].strip()
+    full_path = os.path.join("data/sports_data", selected_file)
+
+    # Lade und analysiere Datei
+    from sport_data import load_sports_data, filter_data_by_time_range, calculate_filtered_stats, format_duration, get_time_range_info
+
+    all_data = load_sports_data()
+
+    # Debug-Ausgabe
+    st.subheader("🧪 Debug: Verfügbare Dateien")
+    st.write("📂 all_data.keys():", list(all_data.keys()))
+    st.write("🟡 selected_file:", selected_file)
+    if selected_file not in all_data:
+        st.error("❌ Datei konnte nicht geladen werden.")
+        st.stop()
+
+    data = all_data[selected_file]
+    if len(data['time']) == 0:
+        st.warning("⚠️ Keine Zeitdaten in dieser Datei.")
+        st.stop()
+
+    # Analysebereich
+    total_duration = float(data['time'][-1] - data['time'][0])
+    st.write(f"**Gesamte Trainingsdauer:** {format_duration(total_duration)}")
+
+    time_range = st.slider(
+        "⏱️ Zeitraum wählen (min)",
+        min_value=0.0,
+        max_value=float(total_duration) / 60,
+        value=(0.0, float(total_duration) / 60),
+        step=0.5,
+        format="%.1f min"
+    )
+
+    start_percent = (time_range[0] * 60) / total_duration * 100
+    end_percent = (time_range[1] * 60) / total_duration * 100
+
+    filtered = filter_data_by_time_range(data, start_percent, end_percent)
+    stats = calculate_filtered_stats(filtered)
+    info = get_time_range_info(data, start_percent, end_percent)
+
+    st.markdown("---")
+    st.header("📊 Trainingsstatistiken")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("⏱️ Dauer", format_duration(stats['duration_seconds']))
+    col2.metric("📏 Distanz", f"{stats['total_distance_km']:.2f} km")
+    col3.metric("🏃‍♂️ Ø Geschwindigkeit", f"{stats['avg_speed_kmh']:.1f} km/h")
+
+    col4, col5, col6 = st.columns(3)
+    col4.metric("🚀 Max. Geschwindigkeit", f"{stats['max_speed_kmh']:.1f} km/h")
+    col5.metric("❤️ Ø Herzfrequenz", f"{stats['avg_heartrate']:.0f} bpm")
+    col6.metric("❤️‍🔥 Max. Herzfrequenz", f"{stats['max_heartrate']:.0f} bpm")
+
+    col7, col8, col9 = st.columns(3)
+    col7.metric("⚙️ Ø Kadenz", f"{stats['avg_cadence']:.0f} rpm")
+    col8.metric("⚙️ Max. Kadenz", f"{stats['max_cadence']:.0f} rpm")
+    col9.metric("⚡ Ø Leistung", f"{stats['avg_power']:.0f} W")
+
+    col10, col11, col12 = st.columns(3)
+    col10.metric("⚡ Max. Leistung", f"{stats['max_power']:.0f} W")
+    col11.metric("🌡️ Ø Temperatur", f"{stats['avg_temperature']:.1f} °C")
+    col12.metric("🌡️ Max. Temperatur", f"{stats['max_temperature']:.1f} °C")
+
+    col13, col14, col15 = st.columns(3)
+    col13.metric("⛰️ Ø Höhe", f"{stats['avg_altitude']:.0f} m")
+    col14.metric("⛰️ Max. Höhe", f"{stats['max_altitude']:.0f} m")
+    col15.metric("⛰️ Min. Höhe", f"{stats['min_altitude']:.0f} m")
+
+    # 📈 Plotly-Visualisierung für Sportdaten
+    st.markdown("---")
+    st.header("📈 Trainingsverlauf im gewählten Zeitraum")
+
+    t0 = filtered["time"][0]
+    time_minutes = (filtered["time"] - t0) / 60
+    mask = (time_minutes >= time_range[0]) & (time_minutes <= time_range[1])
+
+    fig = go.Figure()
+
+    # Herzfrequenz
+    if "heartrate" in filtered:
+        fig.add_trace(go.Scatter(
+            x=time_minutes[mask],
+            y=filtered["heartrate"][mask],
+            mode="lines",
+            name="Herzfrequenz (bpm)",
+            line=dict(color="red")
+        ))
+
+    # Geschwindigkeit
+    if "velocity" in filtered:
+        fig.add_trace(go.Scatter(
+            x=time_minutes[mask],
+            y=filtered["velocity"][mask] * 3.6,
+            mode="lines",
+            name="Geschwindigkeit (km/h)",
+            line=dict(color="blue")
+        ))
+
+    # Leistung
+    if "power" in filtered:
+        fig.add_trace(go.Scatter(
+            x=time_minutes[mask],
+            y=filtered["power"][mask],
+            mode="lines",
+            name="Leistung (W)",
+            line=dict(color="green")
+        ))
+
+    fig.update_layout(
+        xaxis_title="Zeit (min)",
+        yaxis_title="Wert",
+        height=500,
+        legend=dict(x=0.01, y=0.99),
+        template="simple_white"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+   
+    # Neue Seite zur Benutzererstellung
+elif selected_page == "👤 Benutzer anlegen":
+    st.title("👤 Neuen Benutzer anlegen")
+    st.markdown("---")
+
+    with st.form("benutzer_formular"):
+        col1, col2 = st.columns(2)
+        with col1:
+            firstname = st.text_input("Vorname")
+            lastname = st.text_input("Nachname")
+            date_of_birth = st.number_input("Geburtsjahr", min_value=1900, max_value=2100)
+            gender = st.selectbox("Geschlecht", ["male", "female", "other"])
+        with col2:
+            uploaded_file = st.file_uploader("📷 Bild hochladen", type=["jpg", "jpeg", "png"])
         
-    # Bild anzeigen
-    with col1:
-            picture_path = person["picture_path"]
-            if os.path.exists(picture_path):
-                st.image(picture_path, caption=selected_name, width=150)
+        submitted = st.form_submit_button("Benutzer erstellen")
+
+        if submitted:
+            if not firstname or not lastname:
+                st.error("Vor- und Nachname sind erforderlich!")
             else:
-                st.warning("Kein Bild gefunden.")
+                # Benutzer-ID generieren
+                new_id = int(uuid.uuid4().int % 1_000_000)
 
-    with col2:
-            st.header("📝 Persönliche Daten")
-            st.write(f"**Name:** {selected_name}")
-            st.write(f"**Geburtsjahr:** {person['date_of_birth']}")
-            st.write(f"**Geschlecht:** {person['gender']}")
-            st.write(f"**Verfügbare EKG-Tests:** {len(person.get('ekg_tests', []))}")
+                # Bild speichern
+                picture_path = "data/pictures"
+                os.makedirs(picture_path, exist_ok=True)
 
+                if uploaded_file is not None:
+                    file_extension = os.path.splitext(uploaded_file.name)[1]
+                    filename = f"{new_id}{file_extension}"
+                    save_path = os.path.join(picture_path, filename)
+
+                    # Bild korrekt laden und ggf. drehen
+                    image = Image.open(uploaded_file)
+
+                    try:
+                        for orientation in ExifTags.TAGS.keys():
+                            if ExifTags.TAGS[orientation] == "Orientation":
+                                break
+
+                        exif = image._getexif()
+
+                        if exif is not None:
+                            orientation_value = exif.get(orientation, None)
+
+                            if orientation_value == 3:
+                                image = image.rotate(180, expand=True)
+                            elif orientation_value == 6:
+                                image = image.rotate(270, expand=True)
+                            elif orientation_value == 8:
+                                image = image.rotate(90, expand=True)
+                    except Exception as e:
+                        print("EXIF-Rotation konnte nicht gelesen werden:", e)
+
+                    image.save(save_path)
+                    picture_file = save_path
+                else:
+                    picture_file = "data/pictures/default.jpg"
+
+                # In Datenbank speichern
+                conn = sqlite3.connect("personen.db")
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO users (id, firstname, lastname, date_of_birth, gender, picture_path)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (new_id, firstname, lastname, date_of_birth, gender, picture_file))
+                conn.commit()
+                conn.close()
+
+                st.success(f"✅ Benutzer {firstname} {lastname} wurde erfolgreich angelegt.")
+
+elif selected_page == "📥 FIT-Import":
+    st.title("📥 .fit-Datei hochladen & Benutzer zuweisen")
     st.markdown("---")
-    st.header("📊 Zeitauswahl des Trainings")
-    st.slider("Wähle den Zeitraum", min_value=0, max_value=100, value=(20, 80), step=1)
-    
+
+    # Lade Personen aus Datenbank
+    conn = sqlite3.connect("personen.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, firstname, lastname FROM users")
+    users = cursor.fetchall()
+    conn.close()
+
+    if not users:
+        st.error("⚠️ Keine Benutzer in der Datenbank!")
+    else:
+        user_dict = {f"{u[1]} {u[2]} (ID: {u[0]})": u[0] for u in users}
+        selected_user_label = st.selectbox("👤 Benutzer auswählen", list(user_dict.keys()))
+        selected_user_id = user_dict[selected_user_label]
+
+        uploaded_file = st.file_uploader("📁 .fit-Datei auswählen", type=["fit"])
+
+        if uploaded_file:
+            if st.button("📤 Datei hochladen"):
+                # Datei speichern
+                save_dir = "data/sports_data"
+                os.makedirs(save_dir, exist_ok=True)
+
+                timestamp = int(time.time())
+                filename = f"{selected_user_id}_{timestamp}.fit"
+                save_path = os.path.join(save_dir, filename)
+
+                with open(save_path, "wb") as f:
+                    f.write(uploaded_file.read())
+
+                # In Datenbank eintragen
+                conn = sqlite3.connect("personen.db")
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO sports_sessions (user_id, file_name, timestamp)
+                    VALUES (?, ?, ?)
+                """, (selected_user_id, filename, datetime.fromtimestamp(timestamp).isoformat()))
+                conn.commit()
+                conn.close()
+
+                st.success(f"✅ Datei erfolgreich hochgeladen und Benutzer zugewiesen: {selected_user_label}")
+
+elif selected_page == "📂 FIT-Dateien anzeigen":
+    st.title("📂 Zugeordnete .fit-Dateien anzeigen")
     st.markdown("---")
-    st.header("📊 Trainingsdaten")
-    st.write("Die angezeigten Daten sind basiernd auf der Zeitauswahl")
-    col1, col2, col3, col4 = st.columns(4)
 
-    with col1:
-        st.metric("Distanz", "10 km") # Beispielwert
+    # Lade alle Benutzer
+    conn = sqlite3.connect("personen.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, firstname, lastname FROM users")
+    users = cursor.fetchall()
+    conn.close()
 
-    with col2:
-        st.metric("Gesammt Zeit", "1h 45 min") # Beispielwert
+    if not users:
+        st.warning("⚠️ Keine Benutzer gefunden.")
+    else:
+        user_map = {f"{u[1]} {u[2]} (ID: {u[0]})": u[0] for u in users}
+        selected_user_label = st.selectbox("👤 Benutzer auswählen", list(user_map.keys()))
+        selected_user_id = user_map[selected_user_label]
 
-    with col3:
-        st.metric("durchschnittliche Geschwindigkeit", "25km/h") # Beispielwert
+        # Hole alle zugeordneten .fit-Dateien
+        conn = sqlite3.connect("personen.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT file_name, timestamp FROM sports_sessions
+            WHERE user_id = ?
+            ORDER BY timestamp DESC
+        """, (selected_user_id,))
+        user_files = cursor.fetchall()
+        conn.close()
 
-    with col4:
-        st.metric("durchschnittliche Herzfrequenz", "140bpm") # Beispielwert
+        if not user_files:
+            st.info("📭 Dieser Benutzer hat noch keine .fit-Dateien.")
+        else:
+            file_labels = [f"{f[0]} – {f[1][:19]}" for f in user_files]
+            selected_label = st.selectbox("📁 Datei auswählen", file_labels)
+            selected_file = selected_label.split(" – ")[0]
 
+            full_path = os.path.join("data/sports_data", selected_file)
+            if not os.path.exists(full_path):
+                st.error("❌ Datei nicht gefunden!")
+            else:
+                st.success(f"✅ Datei geladen: `{selected_file}`")
 
-    col1, col2, col3, col4 = st.columns(4)
+                # Mit vorhandener Logik aus sport_data analysieren
+                from sport_data import load_sports_data, filter_data_by_time_range, calculate_filtered_stats, format_duration, get_time_range_info
+                from fitparse import FitFile
+                import numpy as np
 
-    with col1:
-        st.metric("Höhenmeter", "300m") # Beispielwert
+                # Lade nur diese Datei
+                data_dict = load_sports_data()
+                if selected_file not in data_dict:
+                    st.error("❌ Fehler beim Einlesen der Datei!")
+                else:
+                    data = data_dict[selected_file]
+                    if len(data["time"]) == 0:
+                        st.warning("⚠️ Datei enthält keine Zeitdaten.")
+                    else:
+                        total_duration = data["time"][-1] - data["time"][0]
+                        time_range = st.slider("Zeitauswahl (min)", 0.0, total_duration / 60, (0.0, total_duration / 60), step=0.5)
 
-    with col2:
-        st.metric("Bewegungszeit", "45min") # Beispielwert
+                        start_percent = (time_range[0] * 60) / total_duration * 100
+                        end_percent = (time_range[1] * 60) / total_duration * 100
 
-    with col3:
-        st.metric("max. Geschwindigkeit", "60km/h") # Beispielwert
+                        filtered = filter_data_by_time_range(data, start_percent, end_percent)
+                        stats = calculate_filtered_stats(filtered)
 
-    with col4:
-        st.metric("max. Herzfrequenz", "185bpm") # Beispielwert
+                        st.markdown("### 📊 Analyseergebnisse")
+                        st.metric("Distanz", f"{stats['total_distance_km']:.2f} km")
+                        st.metric("Ø Herzfrequenz", f"{stats['avg_heartrate']:.0f} bpm")
+                        st.metric("Ø Geschwindigkeit", f"{stats['avg_speed_kmh']:.1f} km/h")
+                        st.metric("Dauer", format_duration(stats['duration_seconds']))
 
-    st.markdown("---")
-    st.header("📊 Grafische Darstellung")
-    st.selectbox("Bitte wähle den gewünschten Parameter!", ["Herzfrequenz", "Distanz", "Höhenmeter"])
-    
-    if selected_page == "Herzfrequenz":
-        st.plotly_chart
-
-    elif selected_page == "Distanz":
-        st.plotly_chart
-
-    elif selected_page == "Höhenmeter":
-        st.plotly_chart
-        st.write("3") #Test
 # Footer
 st.markdown("---")
 st.caption("EKG & Sports Analyse Dashboard | Version 2.1 | Lukas Köhler | Simon Krainer")
