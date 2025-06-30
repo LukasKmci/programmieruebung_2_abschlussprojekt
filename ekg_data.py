@@ -1,10 +1,12 @@
 import json
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 pio.renderers.default = "browser"
 from datetime import datetime
+import sqlite3
 
 
 class EKG_data:
@@ -28,6 +30,39 @@ class EKG_data:
                     ekg["gender"] = person["gender"]
                     return EKG_data(ekg)
         raise ValueError(f"EKG with ID {ekg_id} not found.")
+    
+    @staticmethod
+    def load_by_id_from_db(ekg_id):
+        """Lädt EKG-Daten anhand der EKG-ID direkt aus der Datenbank."""
+        conn = sqlite3.connect("personen.db")
+        cursor = conn.cursor()
+
+        # Hole EKG-Eintrag
+        cursor.execute("SELECT id, user_id, date, result_link FROM ekg_tests WHERE id = ?", (ekg_id,))
+        ekg_row = cursor.fetchone()
+
+        if not ekg_row:
+            raise ValueError(f"EKG mit ID {ekg_id} nicht gefunden.")
+
+        # Hole Benutzerdaten (für Geburtsjahr und Geschlecht)
+        user_id = ekg_row[1]
+        cursor.execute("SELECT date_of_birth, gender FROM users WHERE id = ?", (user_id,))
+        user_row = cursor.fetchone()
+
+        conn.close()
+
+        if not user_row:
+            raise ValueError(f"Benutzer mit ID {user_id} nicht gefunden.")
+
+        ekg_dict = {
+            "id": ekg_row[0],
+            "date": ekg_row[2],
+            "result_link": ekg_row[3],
+            "date_of_birth": user_row[0],
+            "gender": user_row[1]
+        }
+
+        return EKG_data(ekg_dict)
        
     @staticmethod
     def find_peaks(series, threshold=360, window_size=5, min_peak_distance=200):
@@ -75,80 +110,103 @@ class EKG_data:
             "max_hr": max_hr
         }
 
-    def plot_time_series(self, threshold=360, window_size=5, min_peak_distance=200,
-                        range_start=None, range_end=None):
+    def plot_time_series(self, threshold=360, min_peak_distance=200, range_start=None, range_end=None):
         """
-        Plot EKG data with detected peaks.
-        Time is shown in seconds, starting from 0s relative to first data point.
+        Erstellt einen Plotly-Plot der EKG-Zeitreihe
+        
+        Parameters:
+        - threshold: Schwellenwert für Peak-Erkennung
+        - min_peak_distance: Mindestabstand zwischen Peaks
+        - range_start: Startzeit in Sekunden (nicht ms!)
+        - range_end: Endzeit in Sekunden (nicht ms!)
         """
-
-        # Originaldaten
-        time_ms = self.df["time in ms"]
-        signal = self.df["Messwerte in mV"]
-
-        # Bereichsfilterung
-        mask = pd.Series([True] * len(time_ms))
-        if range_start is not None:
-            mask &= time_ms >= range_start
-        if range_end is not None:
-            mask &= time_ms < range_end
-
-        time_ms = time_ms[mask].reset_index(drop=True)
-        signal = signal[mask].reset_index(drop=True)
-
-        # 🛡 Schutz: Wenn nach dem Filtern keine Daten mehr vorhanden sind
-        if time_ms.empty or signal.empty:
-            return go.Figure().update_layout(
-                title="⚠️ Keine Daten im gewählten Zeitbereich",
-                xaxis_title="Zeit (s)",
-                yaxis_title="Spannung (mV)"
-            )
-        # Zeit auf 0 normieren (und in Sekunden umrechnen)
-        time_sec = (time_ms - time_ms.iloc[0]) / 1000.0
-
-        # Peaks berechnen im gefilterten Bereich
-        peaks_df = self.find_peaks(signal, threshold=threshold,
-                                    window_size=window_size,
-                                    min_peak_distance=min_peak_distance)
-        peaks_df["time"] = peaks_df["index"].apply(lambda i: time_sec.iloc[i])
-
+        
+        # Zeit in Sekunden normalisieren (ab 0 startend)
+        time_seconds = (self.df["time in ms"] - self.df["time in ms"].min()) / 1000
+        
+        # Bereich filtern falls angegeben
+        if range_start is not None and range_end is not None:
+            mask = (time_seconds >= range_start) & (time_seconds <= range_end)
+            filtered_time = time_seconds[mask]
+            filtered_data = self.df["Messwerte in mV"][mask]
+        else:
+            filtered_time = time_seconds
+            filtered_data = self.df["Messwerte in mV"]
+        
         # Plot erstellen
         fig = go.Figure()
-
+        
+        # EKG-Signal
         fig.add_trace(go.Scatter(
-            x=time_sec, y=signal,
-            mode="lines",
-            name="EKG",
-            line=dict(color="blue")
+            x=filtered_time,
+            y=filtered_data,
+            mode='lines',
+            name='EKG Signal',
+            line=dict(color='blue', width=1)
         ))
-
-        fig.add_trace(go.Scatter(
-            x=peaks_df["time"],
-            y=peaks_df["value"],
-            mode="markers",
-            name="Peaks",
-            marker=dict(color="red", size=6, symbol="x"),
-            hovertemplate="Zeit: %{x:.2f} s<br>mV: %{y}<extra></extra>"
-        ))
-
+        
+        # Peak-Erkennung (falls gewünscht)
+        if threshold and min_peak_distance:
+            # Hier müssten Sie Ihre Peak-Erkennungslogik anpassen
+            # um mit den gefilterten Daten zu arbeiten
+            pass
+        
+        # Layout anpassen
         fig.update_layout(
-            title=f"EKG mit Peaks (ID {self.id})",
-            xaxis_title="Zeit (s)",
-            yaxis_title="Spannung (mV)"
+            title='EKG Zeitreihe',
+            xaxis_title='Zeit (Sekunden)',
+            yaxis_title='Amplitude',
+            hovermode='x unified'
         )
-
+        
         return fig
         
+    @staticmethod
+    def average_hr(series, sampling_rate=1000, threshold=360, window_size=5, min_peak_distance=200):
+            """
+            Berechnet die durchschnittliche Herzfrequenz (in bpm) aus einem EKG-Signal.
 
+            :param series: pd.Series mit EKG-Daten (Index = Zeit in ms oder Sample-Index)
+            :param sampling_rate: Abtastrate in Hz (z. B. 1000 für 1 kHz)
+            :param threshold: Amplitudenschwelle für Peak-Erkennung (z. B. 360 µV)
+            :param window_size: Fenstergröße für lokale Maxima
+            :param min_peak_distance: Mindestabstand zwischen Peaks (in ms)
+            :return: durchschnittliche Herzfrequenz (float, bpm)
+            """
+
+            peaks_df = EKG_data.find_peaks(series, threshold=threshold,
+                                            window_size=window_size,
+                                            min_peak_distance=min_peak_distance)
+
+            # Zeitachse berechnen (falls nötig)
+            if isinstance(series.index, pd.DatetimeIndex):
+                times_ms = peaks_df["index"].astype("int64") / 1e6  # ns → ms
+            elif isinstance(series.index, pd.Index) and np.issubdtype(series.index.dtype, np.number):
+                times_ms = peaks_df["index"].astype(float)  # Annahme: ms oder Samples
+                if series.index[1] - series.index[0] != 1:
+                    # Umrechnung von Sample-Index zu ms
+                    times_ms = times_ms * (1000 / sampling_rate)
+            else:
+                raise ValueError("Zeitachse nicht interpretierbar.")
+
+            # RR-Intervalle in ms
+            rr_intervals = np.diff(times_ms)
+
+            if len(rr_intervals) == 0:
+                return np.nan  # Nicht genug Peaks gefunden
+
+            # Durchschnittliches RR → HR = 60_000 / ØRR
+            hr_avg = 60000 / np.mean(rr_intervals)
+            return hr_avg
 
 if __name__ == "__main__":
-    #try:
+        #try:
     # JSON laden
     with open("data/person_db.json", "r", encoding="utf-8") as f:
         patients_data = json.load(f)
 
     print("\n--- Test: EKG laden ---")
-    ekg = EKG_data.load_by_id(4, patients_data)
+    ekg = EKG_data.load_by_id(3, patients_data)
     print("Daten geladen:", ekg.df.head())
 
     print("\n--- Test: Peaks finden ---")
@@ -162,6 +220,11 @@ if __name__ == "__main__":
 
     print("\n--- Plot: EKG mit Peaks ---")
     ekg.plot_time_series(threshold=360, min_peak_distance=200, range_start=1000, range_end=20000)
+
+    print("\n--- Test: Durchschnittliche Herzfrequenz berechnen ---")
+    hr_avg = EKG_data.average_hr(ekg.df["Messwerte in mV"], sampling_rate=1000,
+                                 threshold=360, window_size=5, min_peak_distance=200)
+    print(f"Durchschnittliche Herzfrequenz: {hr_avg:.1f} bpm")
 
 
     #except Exception as e:
