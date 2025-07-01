@@ -8,7 +8,6 @@ from person import Person
 from ekg_data import EKG_data
 from database_auth import DatabaseAuth
 import pandas as pd
-from datetime import datetime
 import plotly.graph_objects as go
 import numpy as np
 import os
