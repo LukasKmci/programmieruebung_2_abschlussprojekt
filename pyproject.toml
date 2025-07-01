@@ -3,24 +3,22 @@ name = "programmieruebung_2_abschlussprojekt"
 version = "0.1.0"
 description = "Default template for PDM package"
 authors = [
-    {name = "Simon Krainer", email = "ks0376@mci4me.at"},
+    {name = "LukasKmci", email = "kl4641@mci4me.at"},
 ]
 dependencies = [
-    "streamlit>=1.37.1",
-    "pandas>=2.3.0", 
+    "streamlit>=1.46.1",
+    "pandas>=2.3.0",
     "plotly>=6.1.2",
     "matplotlib>=3.9.4",
-    "altair==4.2.2",
-    "streamlit-authenticator>=0.4.2",
+    "numpy>=2.0.2",
+    "altair<5.0",
+    "streamlit-authenticator>=0.2.2",
     "fitparse>=1.2.0",
-    "Pillow>=11.2.1",
-    "numpy<2.1,>=1.21",
 ]
-requires-python = ">=3.9"
+requires-python = "==3.10.*"
 readme = "README.md"
 license = {text = "MIT"}
 
 
 [tool.pdm]
 distribution = false
-
