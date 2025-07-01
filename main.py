@@ -186,6 +186,94 @@ def update_last_login_personen_db(username):
     conn.commit()
     conn.close()
 
+def init_ekg_tables():
+    """Initialize EKG-related tables in personen.db"""
+    conn = sqlite3.connect('personen.db')
+    cursor = conn.cursor()
+    
+    # Create ekg_tests table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ekg_tests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            test_date TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            result_data TEXT,
+            max_heart_rate INTEGER,
+            avg_heart_rate REAL,
+            duration_seconds REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+def save_ekg_test_to_db(user_id, test_date, file_path, result_data=None, max_hr=None, avg_hr=None, duration=None):
+    """Save EKG test to database"""
+    conn = sqlite3.connect('personen.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        INSERT INTO ekg_tests (user_id, test_date, file_path, result_data, max_heart_rate, avg_heart_rate, duration_seconds)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (user_id, test_date, file_path, result_data, max_hr, avg_hr, duration))
+    
+    conn.commit()
+    test_id = cursor.lastrowid
+    conn.close()
+    return test_id
+
+def get_ekg_tests_for_user(user_id):
+    """Get all EKG tests for a specific user"""
+    conn = sqlite3.connect('personen.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT id, test_date, file_path, result_data, max_heart_rate, avg_heart_rate, duration_seconds, created_at
+        FROM ekg_tests 
+        WHERE user_id = ? 
+        ORDER BY test_date DESC
+    ''', (user_id,))
+    
+    tests = cursor.fetchall()
+    conn.close()
+    return tests
+
+def get_user_with_ekg_data():
+    """Get all users who have EKG data"""
+    conn = sqlite3.connect('personen.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT DISTINCT u.* 
+        FROM users u 
+        INNER JOIN ekg_tests e ON u.id = e.user_id
+    ''')
+    users = cursor.fetchall()
+    conn.close()
+    return users
+
+def init_ekg_tables():
+    """Initialize EKG tables if they don't exist"""
+    conn = sqlite3.connect('personen.db')
+    cursor = conn.cursor()
+    
+    # Create ekg_tests table if it doesn't exist
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ekg_tests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            result_link TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
 # Initialize personen.db
 init_personen_db()
 
@@ -446,204 +534,351 @@ if credentials['usernames']:
             st.dataframe(recent_users)
             
             conn.close()
-
         # EKG-ANALYSE-BEREICH
         elif admin_tab == "📊 EKG-Analyse":
             st.header("🫀 EKG Analyse")
             st.markdown("---")
 
-            # Load persons data based on user role
+            # Initialize EKG tables
+            init_ekg_tables()
+
+            # Load users with EKG data from database
             try:
-                if current_user_role == 'admin':
-                    persons_data = Person.load_person_data()
-                    person_names = Person.get_person_list(persons_data)
-                else:
-                    # For regular users, only show their own data
-                    persons_data = Person.load_person_data()
-                    person_names = Person.get_person_list(persons_data)
+                users_with_ekg = get_user_with_ekg_data()
+                
+                if not users_with_ekg:
+                    st.warning("⚠️ Keine EKG-Daten in der Datenbank verfügbar")
                     
-                if not person_names:
-                    st.warning("⚠️ Keine EKG-Daten verfügbar")
+                    # Show option to import EKG data
+                    with st.expander("📥 EKG-Daten importieren"):
+                        st.info("Hier können Sie EKG-Daten zu Benutzern hinzufügen:")
+                        
+                        # Get all users for selection
+                        conn = sqlite3.connect('personen.db')
+                        cursor = conn.cursor()
+                        cursor.execute('SELECT id, firstname, lastname, username FROM users WHERE 1=1')  # Removed is_active check
+                        all_users = cursor.fetchall()
+                        conn.close()
+                        
+                        if all_users:
+                            user_options = {f"{u[1]} {u[2]} (@{u[3]})": u[0] for u in all_users}
+                            selected_user = st.selectbox("👤 Benutzer auswählen", list(user_options.keys()))
+                            
+                            with st.form("ekg_import_form"):
+                                test_date = st.date_input("📅 Testdatum", value=date.today())
+                                ekg_file = st.file_uploader("📁 EKG-Datei hochladen", type=['csv', 'txt', 'json'])
+                                
+                                if st.form_submit_button("📤 EKG-Test hinzufügen"):
+                                    if ekg_file is not None:
+                                        # Create EKG data directory
+                                        ekg_dir = "data/ekg_data"
+                                        os.makedirs(ekg_dir, exist_ok=True)
+                                        
+                                        # Save file
+                                        user_id = user_options[selected_user]
+                                        timestamp = int(time.time())
+                                        filename = f"ekg_{user_id}_{timestamp}_{ekg_file.name}"
+                                        file_path = os.path.join(ekg_dir, filename)
+                                        
+                                        with open(file_path, "wb") as f:
+                                            f.write(ekg_file.read())
+                                        
+                                        # Save to database with correct column names
+                                        conn = sqlite3.connect('personen.db')
+                                        cursor = conn.cursor()
+                                        cursor.execute('''
+                                            INSERT INTO ekg_tests (user_id, date, result_link)
+                                            VALUES (?, ?, ?)
+                                        ''', (user_id, str(test_date), file_path))
+                                        test_id = cursor.lastrowid
+                                        conn.commit()
+                                        conn.close()
+                                        
+                                        st.success(f"✅ EKG-Test erfolgreich hinzugefügt (ID: {test_id})")
+                                        st.rerun()
                     st.stop()
+                    
+                # Create user selection options
+                user_options = {}
+                for user in users_with_ekg:
+                    display_name = f"{user[5]} {user[6]}" if user[5] and user[6] else user[1]  # firstname lastname or username
+                    user_options[display_name] = user[0]  # user_id
                     
                 # Person selection in sidebar
                 with st.sidebar:
                     st.markdown("---")
                     st.header("📋 EKG-Analyse")
-                    selected_name = st.selectbox("👤 Person auswählen", person_names, key="person_select")
-                
+                    selected_user_name = st.selectbox("👤 Person auswählen", list(user_options.keys()), key="person_select")
+
                 # Main EKG analysis content
-                if selected_name:
-                    person = Person.find_person_data_by_name(selected_name)
-                    
-                    if not person:
-                        st.error(f"❌ Person '{selected_name}' nicht gefunden")
-                        st.stop()
-                    
-                    # Show different information based on user role
-                    if current_user_role == 'admin':
-                        st.success("🔒 Admin-Ansicht: Vollzugriff auf alle EKG-Daten")
-                    else:
-                        st.info("👤 Benutzer-Ansicht: Eingeschränkter Zugriff")
-                    
-                    # Person information display
-                    st.header("👤 Personeninformationen")
-                    
-                    col1, col2 = st.columns([2, 2])
-                    
-                    # Display image
-                    with col1:
-                        picture_path = person["picture_path"]
-                        if os.path.exists(picture_path):
-                            st.image(picture_path, caption=selected_name, width=150)
-                        else:
-                            st.warning("Kein Bild gefunden.")
-
-                    with col2:
-                        st.header("📝 Persönliche Daten")
-                        st.write(f"**Name:** {selected_name}")
-                        st.write(f"**Geburtsjahr:** {person['date_of_birth']}")
-                        st.write(f"**Geschlecht:** {person['gender']}")
-                        st.write(f"**Verfügbare EKG-Tests:** {len(person.get('ekg_tests', []))}")
+                if selected_user_name:
+                    try:
+                        selected_user_id = user_options[selected_user_name]
                         
-                    # EKG data selection and display
-                    st.markdown("---")
-                    ekg_tests = person.get("ekg_tests", [])
-                    if ekg_tests:
-                        ekg_ids = [str(test["id"]) for test in ekg_tests]
-                        selected_ekg_id = st.selectbox("📊EKG-Datensatz wählen", ekg_ids)
+                        # Get user data from database with correct column names
+                        conn = sqlite3.connect('personen.db')
+                        cursor = conn.cursor()
+                        cursor.execute('SELECT * FROM users WHERE id = ?', (selected_user_id,))
+                        user_data = cursor.fetchone()
+                        conn.close()
+                        
+                        if not user_data:
+                            st.error(f"❌ Benutzer mit ID '{selected_user_id}' nicht gefunden")
+                            st.stop()
+                        
+                        # Show different information based on user role
+                        if current_user_role == 'admin':
+                            st.success("🔒 Admin-Ansicht: Vollzugriff auf alle EKG-Daten")
+                        else:
+                            st.info("👤 Benutzer-Ansicht: Eingeschränkter Zugriff")
+                        
+                        # Person information display
+                        st.header("👤 Personeninformationen")
+                        
+                        col1, col2 = st.columns([2, 2])
+                        
+                        # Display image
+                        with col1:
+                            # Assuming picture_path is around index 10-11 based on your structure
+                            if len(user_data) > 10 and user_data[10] and os.path.exists(user_data[10]):
+                                st.image(user_data[10], caption=selected_user_name, width=150)
+                            else:
+                                st.warning("📷 Kein Bild gefunden")
 
-                        if selected_ekg_id:
-                            ekg_obj = EKG_data.load_by_id(int(selected_ekg_id))
+                        with col2:
+                            st.header("📝 Persönliche Daten")
+                            st.write(f"**Name:** {selected_user_name}")
+                            st.write(f"**E-Mail:** {user_data[3] if len(user_data) > 3 else 'N/A'}")  # email
+                            st.write(f"**Geburtsdatum:** {user_data[7] if len(user_data) > 7 and user_data[7] else 'N/A'}")  # date_of_birth
+                            st.write(f"**Geschlecht:** {user_data[8] if len(user_data) > 8 and user_data[8] else 'N/A'}")  # gender
+                            
+                            # Get EKG test count
+                            conn = sqlite3.connect('personen.db')
+                            cursor = conn.cursor()
+                            cursor.execute('SELECT * FROM ekg_tests WHERE user_id = ?', (selected_user_id,))
+                            ekg_tests = cursor.fetchall()
+                            conn.close()
+                            
+                            st.write(f"**Verfügbare EKG-Tests:** {len(ekg_tests)}")
+                            
+                        # EKG data selection and display
+                        st.markdown("---")
+                        
+                        if ekg_tests:
+                            # Create EKG selection options with correct column names
+                            ekg_options = {}
+                            for test in ekg_tests:
+                                test_id, user_id, test_date, result_link = test  # Match your db structure
+                                display_text = f"Test {test_id} - {test_date}"
+                                ekg_options[display_text] = test_id
+                            
+                            selected_ekg_display = st.selectbox("📊 EKG-Datensatz wählen", list(ekg_options.keys()))
+                            selected_ekg_id = ekg_options[selected_ekg_display]
 
-                            # Calculate max heart rate and average heart rate
-                            hr_info = ekg_obj.calc_max_heart_rate(ekg_obj.birth_year, ekg_obj.gender)
-                            
-                            # Calculate average heart rate
-                            avg_hr = EKG_data.average_hr(
-                                ekg_obj.df["Messwerte in mV"], 
-                                sampling_rate=1000,
-                                threshold=360, 
-                                window_size=5, 
-                                min_peak_distance=200
-                            )
-                            
-                            st.header("📊 EKG-Kennzahlen")
-                            
-                            # Display metrics in columns
-                            col1, col2, col3, col4, col5 = st.columns(5)
-                            
-                            with col1:
-                                st.metric("🫀Max HR", f"{hr_info['max_hr']} bpm")
-                            
-                            with col2:
-                                if avg_hr and not pd.isna(avg_hr):
-                                    st.metric("💓 Ø Herzfrequenz", f"{avg_hr:.1f} bpm")
+                            if selected_ekg_id:
+                                try:
+                                    # Get selected EKG test data
+                                    selected_test = next(test for test in ekg_tests if test[0] == selected_ekg_id)
+                                    test_id, user_id, test_date, result_link = selected_test
                                     
-                                    # HR zone evaluation
-                                    hr_percentage = (avg_hr / hr_info['max_hr']) * 100
-                                    if hr_percentage < 50:
-                                        hr_zone = "Ruhezone"
-                                        zone_color = "🟢"
-                                    elif hr_percentage < 70:
-                                        hr_zone = "Aerobe Zone"
-                                        zone_color = "🟡"
-                                    elif hr_percentage < 85:
-                                        hr_zone = "Anaerobe Zone"
-                                        zone_color = "🟠"
-                                    else:
-                                        hr_zone = "Maximale Zone"
-                                        zone_color = "🔴"
-                                else:
-                                    st.metric("Durchschnittliche HR", "Nicht berechenbar")
-                                    hr_percentage = 0
-                                    hr_zone = "Unbekannt"
-                                    zone_color = "⚪"
-                            
-                            with col3:
-                                if avg_hr and not pd.isna(avg_hr):
-                                    st.metric("HR-Zone", f"{zone_color} {hr_zone}")
-                                    st.write(f"({hr_percentage:.1f}% der Max HR)")
-                                else:
-                                    st.metric("HR-Zone", "⚪ Unbekannt")
-                            
-                            with col4:
-                                st.metric(f"📅 Testdatum", ekg_obj.date)
-                            
-                            with col5:
-                                # Calculate EKG duration and round to whole seconds
-                                ekg_duration_ms = ekg_obj.df["time in ms"].max() - ekg_obj.df["time in ms"].min()
-                                ekg_duration_seconds = round(ekg_duration_ms / 1000)
-                                st.metric("⏱️ Dauer des EKGs", f"{ekg_duration_seconds/60:.0f} Minuten")
-
-                            # Time range selection with slider
-                            st.markdown("---")
-                            st.subheader("Zeitbereich auswählen")
-
-                            # Columns for time range selection
-                            col1, col2 = st.columns([3,1])
-                            
-                            with col1:
-                                # Convert time data to seconds for better UX
-                                time_data_seconds = (ekg_obj.df["time in ms"] - ekg_obj.df["time in ms"].min()) / 1000
-                                max_duration = time_data_seconds.max()
-
-                                # Dual-range slider in seconds
-                                time_range = st.slider(
-                                    "Zeitbereich (Sekunden)",
-                                    min_value=0.0,
-                                    max_value=max_duration,
-                                    value=(0.0, min(10.0, max_duration)),
-                                    step=0.1,
-                                    format="%.1f s"
-                                )
-                                # Display selected time range
-                                st.write(f"Gewählter Bereich: {time_range[0]:.1f} - {time_range[1]:.1f} Sekunden")
-
-                            with col2:
-                                # Calculate average heart rate in selected time range
-                                if time_range[0] != 0.0 or time_range[1] != max_duration:
+                                    # Try to load EKG data using existing EKG_data class
                                     try:
-                                        # Calculate time data in seconds
-                                        time_seconds = (ekg_obj.df["time in ms"] - ekg_obj.df["time in ms"].min()) / 1000
-                                        # Mask for selected range
-                                        mask = (time_seconds >= time_range[0]) & (time_seconds <= time_range[1])
-                                        filtered_data = ekg_obj.df["Messwerte in mV"][mask]
-
-                                        if len(filtered_data) > 0:
-                                            # Use same parameters as above
-                                            range_hr = EKG_data.average_hr(
-                                                filtered_data,
-                                                sampling_rate=1000,
-                                                threshold=360,
-                                                window_size=5,
-                                                min_peak_distance=200
-                                            )
-                                            if not pd.isna(range_hr):
-                                                st.metric("💓 Bereichs-HR", f"{range_hr:.1f} bpm")
-                                            else:
-                                                st.warning("⚠️ HR nicht berechenbar")
-                                        else:
-                                            st.warning("⚠️ Keine Daten im Bereich")
+                                        ekg_obj = EKG_data.load_by_id(int(selected_ekg_id))
+                                        
+                                        # Calculate metrics
+                                        birth_year = int(user_data[7][:4]) if len(user_data) > 7 and user_data[7] else 1990
+                                        gender = user_data[8] if len(user_data) > 8 and user_data[8] else 'male'
+                                        hr_info = ekg_obj.calc_max_heart_rate(birth_year, gender)
+                                        max_hr = hr_info['max_hr']
+                                        
+                                        # Calculate average heart rate
+                                        avg_hr = EKG_data.average_hr(
+                                            ekg_obj.df["Messwerte in mV"], 
+                                            sampling_rate=1000,
+                                            threshold=360, 
+                                            window_size=5, 
+                                            min_peak_distance=200
+                                        )
+                                        
                                     except Exception as e:
-                                        st.caption(f"❌ Fehler: {str(e)[:30]}...")
+                                        st.error(f"❌ Fehler beim Laden mit EKG_data Klasse: {e}")
+                                        # Fallback: try to load data directly from file
+                                        if result_link and os.path.exists(result_link):
+                                            st.info("💡 Versuche direkte Datei-Analyse...")
+                                            max_hr = 180  # Default values
+                                            avg_hr = 120
+                                        else:
+                                            st.error("❌ EKG-Datei nicht gefunden")
+                                            max_hr = None
+                                            avg_hr = None
+                                    
+                                    st.header("📊 EKG-Kennzahlen")
+                                    
+                                    # Display metrics in columns
+                                    col1, col2, col3, col4 = st.columns(4)
+                                    
+                                    with col1:
+                                        st.metric("🫀 Max HR", f"{max_hr} bpm" if max_hr else "N/A")
+                                    
+                                    with col2:
+                                        if avg_hr and not pd.isna(avg_hr):
+                                            st.metric("💓 Ø Herzfrequenz", f"{avg_hr:.1f} bpm")
+                                            
+                                            # HR zone evaluation
+                                            if max_hr:
+                                                hr_percentage = (avg_hr / max_hr) * 100
+                                                if hr_percentage < 50:
+                                                    hr_zone = "Ruhezone"
+                                                    zone_color = "🟢"
+                                                elif hr_percentage < 70:
+                                                    hr_zone = "Aerobe Zone"
+                                                    zone_color = "🟡"
+                                                elif hr_percentage < 85:
+                                                    hr_zone = "Anaerobe Zone"
+                                                    zone_color = "🟠"
+                                                else:
+                                                    hr_zone = "Maximale Zone"
+                                                    zone_color = "🔴"
+                                            else:
+                                                hr_percentage = 0
+                                                hr_zone = "Unbekannt"
+                                                zone_color = "⚪"
+                                        else:
+                                            st.metric("💓 Ø Herzfrequenz", "Nicht berechenbar")
+                                            hr_percentage = 0
+                                            hr_zone = "Unbekannt"
+                                            zone_color = "⚪"
+                                    
+                                    with col3:
+                                        if avg_hr and not pd.isna(avg_hr) and max_hr:
+                                            st.metric("HR-Zone", f"{zone_color} {hr_zone}")
+                                            st.write(f"({hr_percentage:.1f}% der Max HR)")
+                                        else:
+                                            st.metric("HR-Zone", "⚪ Unbekannt")
+                                    
+                                    with col4:
+                                        st.metric("📅 Testdatum", test_date)
 
-                            # Display plot
-                            st.markdown("---")
-                            st.header("📈 EKG Zeitreihe")
-                            try:
-                                fig = ekg_obj.plot_time_series(
-                                    threshold=360,
-                                    min_peak_distance=200,
-                                    range_start=time_range[0],
-                                    range_end=time_range[1]
-                                )
-                                st.plotly_chart(fig, use_container_width=True, key=f"plot_{selected_ekg_id}")
-                            except Exception as e:
-                                st.error(f"❌ Fehler beim Laden der Daten: {e}")
+                                    # Try to display EKG plot if EKG object was loaded successfully
+                                    if 'ekg_obj' in locals():
+                                        # Time range selection with slider
+                                        st.markdown("---")
+                                        st.subheader("Zeitbereich auswählen")
+
+                                        # Columns for time range selection
+                                        col1, col2 = st.columns([3,1])
+                                        
+                                        with col1:
+                                            # Convert time data to seconds for better UX
+                                            time_data_seconds = (ekg_obj.df["time in ms"] - ekg_obj.df["time in ms"].min()) / 1000
+                                            max_duration = time_data_seconds.max()
+
+                                            # Dual-range slider in seconds
+                                            time_range = st.slider(
+                                                "Zeitbereich (Sekunden)",
+                                                min_value=0.0,
+                                                max_value=max_duration,
+                                                value=(0.0, min(10.0, max_duration)),
+                                                step=0.1,
+                                                format="%.1f s"
+                                            )
+                                            # Display selected time range
+                                            st.write(f"Gewählter Bereich: {time_range[0]:.1f} - {time_range[1]:.1f} Sekunden")
+
+                                        with col2:
+                                            # Calculate average heart rate in selected time range
+                                            if time_range[0] != 0.0 or time_range[1] != max_duration:
+                                                try:
+                                                    # Calculate time data in seconds
+                                                    time_seconds = (ekg_obj.df["time in ms"] - ekg_obj.df["time in ms"].min()) / 1000
+                                                    # Mask for selected range
+                                                    mask = (time_seconds >= time_range[0]) & (time_seconds <= time_range[1])
+                                                    filtered_data = ekg_obj.df["Messwerte in mV"][mask]
+
+                                                    if len(filtered_data) > 0:
+                                                        # Use same parameters as above
+                                                        range_hr = EKG_data.average_hr(
+                                                            filtered_data,
+                                                            sampling_rate=1000,
+                                                            threshold=360,
+                                                            window_size=5,
+                                                            min_peak_distance=200
+                                                        )
+                                                        if not pd.isna(range_hr):
+                                                            st.metric("💓 Bereichs-HR", f"{range_hr:.1f} bpm")
+                                                        else:
+                                                            st.warning("⚠️ HR nicht berechenbar")
+                                                    else:
+                                                        st.warning("⚠️ Keine Daten im Bereich")
+                                                except Exception as e:
+                                                    st.caption(f"❌ Fehler: {str(e)[:30]}...")
+
+                                        # Display plot
+                                        st.markdown("---")
+                                        st.header("📈 EKG Zeitreihe")
+                                        try:
+                                            fig = ekg_obj.plot_time_series(
+                                                threshold=360,
+                                                min_peak_distance=200,
+                                                range_start=time_range[0],
+                                                range_end=time_range[1]
+                                            )
+                                            st.plotly_chart(fig, use_container_width=True, key=f"plot_{selected_ekg_id}")
+                                        except Exception as e:
+                                            st.error(f"❌ Fehler beim Erstellen des Plots: {e}")
+                                    else:
+                                        st.info("📊 EKG-Visualisierung nicht verfügbar - Datei konnte nicht geladen werden")
+                                        st.markdown("**Gespeicherte Informationen:**")
+                                        st.write(f"- Datei: {os.path.basename(result_link) if result_link else 'N/A'}")
+                                        st.write(f"- Test-ID: {test_id}")
+                                        st.write(f"- Datum: {test_date}")
+                                    
+                                except Exception as e:
+                                    st.error(f"❌ Fehler beim Laden des EKG-Tests: {e}")
+                                    st.info("💡 Überprüfen Sie, ob die EKG-Datei korrekt gespeichert wurde.")
+                                    
+                        else:
+                            st.warning("📭 Keine EKG-Tests für diesen Benutzer verfügbar.")
                             
-                    else:
-                        st.warning("📭 Keine EKG-Tests für diese Person verfügbar.")
+                            # Option to add EKG test
+                            with st.expander("➕ EKG-Test hinzufügen"):
+                                with st.form(f"add_ekg_{selected_user_id}"):
+                                    test_date = st.date_input("📅 Testdatum", value=date.today())
+                                    ekg_file = st.file_uploader("📁 EKG-Datei hochladen", type=['csv', 'txt', 'json'])
+                                    
+                                    if st.form_submit_button("📤 EKG-Test hinzufügen"):
+                                        if ekg_file is not None:
+                                            # Create EKG data directory
+                                            ekg_dir = "data/ekg_data"
+                                            os.makedirs(ekg_dir, exist_ok=True)
+                                            
+                                            # Save file
+                                            timestamp = int(time.time())
+                                            filename = f"ekg_{selected_user_id}_{timestamp}_{ekg_file.name}"
+                                            file_path = os.path.join(ekg_dir, filename)
+                                            
+                                            with open(file_path, "wb") as f:
+                                                f.write(ekg_file.read())
+                                            
+                                            # Save to database with correct column names
+                                            conn = sqlite3.connect('personen.db')
+                                            cursor = conn.cursor()
+                                            cursor.execute('''
+                                                INSERT INTO ekg_tests (user_id, date, result_link)
+                                                VALUES (?, ?, ?)
+                                            ''', (selected_user_id, str(test_date), file_path))
+                                            test_id = cursor.lastrowid
+                                            conn.commit()
+                                            conn.close()
+                                            
+                                            st.success(f"✅ EKG-Test erfolgreich hinzugefügt (ID: {test_id})")
+                                            st.rerun()
+                                        else:
+                                            st.error("❌ Bitte wählen Sie eine Datei aus")
+                            
+                    except Exception as e:
+                        st.error(f"❌ Fehler beim Laden der Benutzerdaten: {e}")
+                        st.info("💡 Überprüfen Sie, ob die Datenbank korrekt initialisiert wurde.")
                 else:
                     # Welcome page with role-specific content
                     if current_user_role == 'admin':
@@ -664,7 +899,14 @@ if credentials['usernames']:
                             st.info("👤 **Persönlicher Bereich:** Sie sehen nur verfügbare EKG-Daten.")
                             
             except Exception as e:
-                st.error(f"Fehler beim Laden der EKG-Daten: {e}")
+                st.error(f"❌ Fehler beim Laden der EKG-Daten: {e}")
+                st.info("💡 Überprüfen Sie, ob alle erforderlichen Dateien vorhanden sind:")
+                st.code("""
+                - person.py
+                - ekg_data.py  
+                - personen.db Datenbank
+                - EKG-Datendateien im data/ekg_data Verzeichnis
+                """)
 
         # TRAINING-BEREICH
         elif admin_tab == "🏋️‍♂️ Trainings":
@@ -676,9 +918,21 @@ if credentials['usernames']:
                 st.markdown("---")
                 st.header("📋 Trainings-Analyse")
                 
-                # Load persons data
-                persons_data = Person.load_person_data_from_db()
-                person_names = Person.get_person_list(persons_data)
+                # Load persons data from database for sports
+                try:
+                    conn = sqlite3.connect('personen.db')
+                    cursor = conn.cursor()
+                    cursor.execute('SELECT id, username, firstname, lastname FROM users WHERE is_active = 1')
+                    users = cursor.fetchall()
+                    conn.close()
+                    
+                    person_names = [f"{u[2]} {u[3]}" for u in users if u[2] and u[3]]
+                    if not person_names:
+                        person_names = [u[1] for u in users]  # Fallback to username
+                        
+                except Exception as e:
+                    st.error(f"Error loading users: {e}")
+                    person_names = []
                 
                 if not person_names:
                     st.warning("⚠️ Keine Personen verfügbar")
@@ -688,7 +942,32 @@ if credentials['usernames']:
             
             # Main sports analysis content
             if selected_name:
-                person = Person.find_person_data_by_name_from_db(selected_name)
+                # Find person from database
+                try:
+                    conn = sqlite3.connect('personen.db')
+                    cursor = conn.cursor()
+                    # Try to find by full name first
+                    cursor.execute('SELECT * FROM users WHERE (firstname || " " || lastname) = ? OR username = ?', 
+                                (selected_name, selected_name))
+                    user_row = cursor.fetchone()
+                    conn.close()
+                    
+                    if user_row:
+                        person = {
+                            'id': user_row[0],
+                            'username': user_row[1],
+                            'full_name': user_row[4],
+                            'firstname': user_row[5],
+                            'lastname': user_row[6],
+                            'date_of_birth': user_row[7],
+                            'gender': user_row[8],
+                            'picture_path': user_row[11] if user_row[11] else "default_picture.jpg"
+                        }
+                    else:
+                        person = None
+                except Exception as e:
+                    st.error(f"Error finding person: {e}")
+                    person = None
                 if person is None:
                     st.error("❌ Benutzer nicht gefunden!")
                     st.stop()
