@@ -15,6 +15,7 @@ dependencies = [
     "streamlit-authenticator>=0.2.2",
     "fitparse>=1.2.0",
     "pillow>=11.2.1",
+    "scipy>=1.15.3",
 ]
 requires-python = "==3.10.*"
 readme = "README.md"
