@@ -637,13 +637,38 @@ if credentials['usernames']:
                         
                         col1, col2 = st.columns([2, 2])
                         
-                        # Display image
+                        # Display image - FIXED VERSION
                         with col1:
-                            # Assuming picture_path is around index 10-11 based on your structure
-                            if len(user_data) > 10 and user_data[10] and os.path.exists(user_data[10]):
-                                st.image(user_data[10], caption=selected_user_name, width=150)
-                            else:
-                                st.warning("📷 Kein Bild gefunden")
+                            image_displayed = False
+                            
+                            # First try to load from picture_data (BLOB) - index 12
+                            if len(user_data) > 12 and user_data[12]:
+                                try:
+                                    image = Image.open(io.BytesIO(user_data[12]))
+                                    st.image(image, caption=selected_user_name, width=150)
+                                    image_displayed = True
+                                except Exception as e:
+                                    st.warning(f"📷 Fehler beim Laden des BLOB-Bildes: {e}")
+                            
+                            # If BLOB failed, try picture_path - index 11
+                            if not image_displayed and len(user_data) > 11 and user_data[11]:
+                                picture_path = user_data[11]
+                                if os.path.exists(picture_path):
+                                    try:
+                                        st.image(picture_path, caption=selected_user_name, width=150)
+                                        image_displayed = True
+                                    except Exception as e:
+                                        st.warning(f"📷 Fehler beim Laden der Bilddatei: {e}")
+                                else:
+                                    st.warning(f"📷 Bilddatei nicht gefunden: {picture_path}")
+                            
+                            # If no image could be displayed
+                            if not image_displayed:
+                                st.info("📷 Kein Profilbild verfügbar")
+                                # Debug information
+                                if len(user_data) > 11:
+                                    st.caption(f"Debug: picture_path = {user_data[11]}")
+                                    st.caption(f"Debug: picture_data exists = {bool(user_data[12]) if len(user_data) > 12 else False}")
 
                         with col2:
                             st.header("📝 Persönliche Daten")
