@@ -9,6 +9,7 @@ from ekg_data import EKG_data
 from database_auth import DatabaseAuth
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.express as px
 import numpy as np
 import os
 from datetime import datetime, date
@@ -22,7 +23,7 @@ import matplotlib.patches as patches
 from matplotlib.widgets import RangeSlider
 from scipy.signal import find_peaks
 from PIL import Image, ExifTags
-from sport_data import load_sports_data, filter_data_by_time_range, calculate_filtered_stats, format_duration, load_sports_data
+from sport_data import load_sports_data, filter_data_by_time_range, calculate_filtered_stats, format_duration, load_sports_data, create_activity_heatmap, create_intensity_heatmap, create_geographic_heatmap
 
 st.set_page_config(
     page_title="EKG & Sports Analyse Dashboard",
@@ -30,6 +31,12 @@ st.set_page_config(
     initial_sidebar_state="expanded",
     page_icon="🫀🏃‍♂️"
 )
+
+@st.cache_data
+def load_sports_data_cached():
+    """Cached version of load_sports_data to improve performance"""
+    return load_sports_data()
+
 
 # Database helper functions for personen.db
 def init_personen_db():
@@ -1585,13 +1592,7 @@ if credentials['usernames']:
                                 st.info("🔒 **Vollzugriff:** Sie können alle EKG-Daten einsehen und Benutzer verwalten.")
                             with col2:
                                 st.info("👥 **Verwaltung:** Nutzen Sie die Seitenleiste für Benutzerverwaltung.")
-                        else:
-                            st.header("🎯 Willkommen in Ihrem EKG-Dashboard!")
-                            
-                            col1, col2, col3 = st.columns([1, 2, 1])
-                            with col2:
-                                st.markdown("### Wählen Sie eine Person aus der Seitenleiste aus.")
-                                st.info("👤 **Persönlicher Bereich:** Sie sehen nur verfügbare EKG-Daten.")
+                        
                             
             except Exception as e:
                 st.error(f"❌ Fehler beim Laden der EKG-Daten: {e}")
@@ -1684,7 +1685,11 @@ if credentials['usernames']:
 
                 st.markdown("---")
 
-                # Load associated .fit files from SQLite
+                
+                # Load and analyze file first
+                from sport_data import get_time_range_info
+
+                # Load associated .fit files from SQLite and filter by actually available files
                 conn = sqlite3.connect("personen.db")
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -1695,31 +1700,174 @@ if credentials['usernames']:
                 user_files = cursor.fetchall()
                 conn.close()
 
+                # # DEBUG: Show what we found
+                # st.subheader("🔍 Debug Information")
+                # st.write(f"📊 Files in database for user {person['id']}: {len(user_files)}")
+                # for f in user_files:
+                #     st.write(f"  - {f[0]} (uploaded: {f[1]})")
+
+                # # DEBUG: Check if files actually exist in folder
+                # data_dir = "data/sports_data"
+                # st.write(f"📁 Checking folder: {data_dir}")
+                # if os.path.exists(data_dir):
+                #     actual_files = os.listdir(data_dir)
+                #     st.write(f"Files in folder: {len(actual_files)}")
+                #     for f in actual_files[:10]:  # Show first 10 files
+                #         st.write(f"  - {f}")
+                # else:
+                #     st.error(f"❌ Folder {data_dir} does not exist!")
+
                 if not user_files:
                     st.warning("📭 Keine .fit-Dateien für diesen Benutzer.")
                     st.stop()
 
-                file_labels = [f"{f[0]} – {f[1][:19]}" for f in user_files]
+                # Check which files actually exist and can be loaded
+                available_files = []
+                data_dir = "data/sports_data"
+
+                for f in user_files:
+                    filename = f[0]
+                    file_path = os.path.join(data_dir, filename)
+                    
+                    # Check if file exists
+                    if os.path.exists(file_path):
+                        try:
+                            # Try to load the file
+                            from fitparse import FitFile
+                            fitfile = FitFile(file_path)
+                            records = list(fitfile.get_messages('record'))
+                            
+                            if len(records) > 0:
+                                available_files.append(f)
+                                #st.write(f"✅ {filename}: File OK ({len(records)} records)")
+                            #else:
+                                #st.write(f"⚠️ {filename}: No data records found")
+                                
+                        except Exception as e:
+                            #st.write(f"❌ {filename}: Error loading - {e}")
+                            pass
+                    #else:
+                        #st.write(f"❌ {filename}: File not found in {data_dir}")
+
+                if not available_files:
+                    st.warning("📭 Keine gültigen .fit-Dateien für diesen Benutzer gefunden.")
+                    st.stop()
+                #st.markdown("---")
+                st.subheader("🧹 Database Cleanup")
+
+                # Check if there are any corrupted files to clean up
+                corrupted_files = []
+                for f in user_files:
+                    filename = f[0]
+                    file_path = os.path.join(data_dir, filename)
+                    if os.path.exists(file_path):
+                        try:
+                            from fitparse import FitFile
+                            fitfile = FitFile(file_path)
+                            list(fitfile.get_messages('record'))
+                        except:
+                            corrupted_files.append(filename)
+
+                if corrupted_files:
+                    st.warning(f"⚠️ Found {len(corrupted_files)} corrupted files in database:")
+                    for cf in corrupted_files:
+                        st.write(f"  - {cf}")
+                    
+                    if st.button("🗑️ Remove Corrupted Files from Database"):
+                        conn = sqlite3.connect("personen.db")
+                        cursor = conn.cursor()
+                        for corrupted_file in corrupted_files:
+                            cursor.execute("DELETE FROM sports_sessions WHERE file_name = ? AND user_id = ?", 
+                                        (corrupted_file, person["id"]))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"✅ Removed {len(corrupted_files)} corrupted files from database")
+                        st.info("🔄 Please refresh the page to see updated file list")
+                else:
+                    st.info("✅ No corrupted files found in database")
+
+                st.markdown("---")
+
+                file_labels = [f"{f[0]} – {f[1][:19]}" for f in available_files]
                 selected_label = st.selectbox("📁 Wähle eine .fit-Datei", file_labels)
                 selected_file = selected_label.split(" – ")[0].strip()
-                full_path = os.path.join("data/sports_data", selected_file)
 
-                # Load and analyze file
-                from sport_data import get_time_range_info
+                # Load the selected file directly
+                file_path = os.path.join(data_dir, selected_file)
+                st.write(f"📖 Loading file: {file_path}")
 
-                all_data = load_sports_data()
-
-                # Debug output
-                st.subheader("🧪 Debug: Verfügbare Dateien")
-                st.write("📂 all_data.keys():", list(all_data.keys()))
-                st.write("🟡 selected_file:", selected_file)
-                if selected_file not in all_data:
-                    st.error("❌ Datei konnte nicht geladen werden.")
-                    st.stop()
-
-                data = all_data[selected_file]
-                if len(data['time']) == 0:
-                    st.warning("⚠️ Keine Zeitdaten in dieser Datei.")
+                try:
+                    from fitparse import FitFile
+                    fitfile = FitFile(file_path)
+                    
+                    # Extract data from the FIT file
+                    time_data = []
+                    heartrate_data = []
+                    velocity_data = []
+                    power_data = []
+                    cadence_data = []
+                    altitude_data = []
+                    temperature_data = []
+                    distance_data = []
+                    position_lat_data = []
+                    position_long_data = []
+                    
+                    for record in fitfile.get_messages('record'):
+                        timestamp = None
+                        for field in record.fields:
+                            if field.name == 'timestamp':
+                                if hasattr(field.value, 'timestamp'):
+                                    timestamp = field.value.timestamp()
+                                else:
+                                    timestamp = field.value
+                        
+                        if timestamp is not None:
+                            time_data.append(timestamp)
+                            
+                            # Extract other values
+                            hr = next((f.value for f in record.fields if f.name == 'heart_rate'), 0)
+                            vel = next((f.value for f in record.fields if f.name == 'speed'), 0)
+                            pow = next((f.value for f in record.fields if f.name == 'power'), 0)
+                            cad = next((f.value for f in record.fields if f.name == 'cadence'), 0)
+                            alt = next((f.value for f in record.fields if f.name == 'altitude'), 0)
+                            temp = next((f.value for f in record.fields if f.name == 'temperature'), 0)
+                            dist = next((f.value for f in record.fields if f.name == 'distance'), 0)
+                            lat = next((f.value for f in record.fields if f.name == 'position_lat'), 0)
+                            lon = next((f.value for f in record.fields if f.name == 'position_long'), 0)
+                            
+                            
+                            heartrate_data.append(hr if hr is not None else 0)
+                            velocity_data.append(vel if vel is not None else 0)
+                            power_data.append(pow if pow is not None else 0)
+                            cadence_data.append(cad if cad is not None else 0)
+                            altitude_data.append(alt if alt is not None else 0)
+                            temperature_data.append(temp if temp is not None else 0)
+                            distance_data.append(dist if dist is not None else 0)
+                            position_lat_data.append(lat if lat is not None else 0)
+                            position_long_data.append(lon if lon is not None else 0)
+                    
+                    if len(time_data) == 0:
+                        st.error("❌ No time data found in file")
+                        st.stop()
+                    
+                    import numpy as np
+                    data = {
+                        'time': np.array(time_data),
+                        'heartrate': np.array(heartrate_data),
+                        'velocity': np.array(velocity_data),
+                        'power': np.array(power_data),
+                        'cadence': np.array(cadence_data),
+                        'altitude': np.array(altitude_data),
+                        'temperature': np.array(temperature_data),
+                        'distance': np.array(distance_data),        
+                        'position_lat': np.array(position_lat_data),
+                        'position_long': np.array(position_long_data)
+                    }
+                    
+                    st.success(f"✅ File loaded successfully: {len(time_data)} data points")
+                    
+                except Exception as e:
+                    st.error(f"❌ Error loading file: {e}")
                     st.stop()
 
                 # Analysis area
@@ -1820,6 +1968,121 @@ if credentials['usernames']:
 
                 st.plotly_chart(fig, use_container_width=True)
 
+                # Add this code in your main training section, after the existing plotly chart
+# Insert this right after the existing st.plotly_chart(fig, use_container_width=True) line
+
+# Add these sections after your existing plotly chart:
+
+                # HEATMAP VISUALIZATIONS
+                st.markdown("---")
+                st.header("🔥 Trainings-Heatmap Analysen")
+                
+                # Create tabs for different heatmap views
+                heatmap_tab1, heatmap_tab2, heatmap_tab3 = st.tabs(["📊 Metriken-Heatmap", "🌡️ Intensitäts-Heatmap",  "🗺️ Geografische Route"])
+                
+                with heatmap_tab1:
+                    st.subheader("📊 Metriken-Heatmap über Zeit")
+                    st.write("Diese Heatmap zeigt die Entwicklung verschiedener Trainingsmetriken über den gewählten Zeitraum.")
+                    
+                    try:
+                        heatmap_data, time_bins, metrics = create_activity_heatmap(filtered, time_range)
+                        
+                        # Create the heatmap
+                        fig_heatmap = go.Figure(data=go.Heatmap(
+                            z=heatmap_data,
+                            x=[f"{t:.1f}min" for t in time_bins],
+                            y=metrics,
+                            colorscale='RdYlBu_r',
+                            colorbar=dict(title="Intensität (%)"),
+                            hoverongaps=False
+                        ))
+                        
+                        fig_heatmap.update_layout(
+                            title="Trainingsmetriken über Zeit",
+                            xaxis_title="Zeit",
+                            yaxis_title="Metriken",
+                            height=400,
+                            template="simple_white"
+                        )
+                        
+                        st.plotly_chart(fig_heatmap, use_container_width=True)
+                        
+                    except Exception as e:
+                        st.error(f"❌ Fehler beim Erstellen der Metriken-Heatmap: {e}")
+                
+                with heatmap_tab2:
+                    st.subheader("🌡️ Trainingsintensität über Zeit")
+                    st.write("Diese Heatmap zeigt die kombinierte Trainingsintensität in 1-Minuten-Intervallen.")
+                    
+                    try:
+                        intensity_data, time_labels = create_intensity_heatmap(filtered, time_range)
+                        
+                        # Reshape data for heatmap (single row)
+                        intensity_matrix = np.array(intensity_data).reshape(1, -1)
+                        
+                        fig_intensity = go.Figure(data=go.Heatmap(
+                            z=intensity_matrix,
+                            x=time_labels,
+                            y=['Intensität'],
+                            colorscale='Viridis',
+                            colorbar=dict(title="Intensität (%)"),
+                            showscale=True
+                        ))
+                        
+                        fig_intensity.update_layout(
+                            title="Trainingsintensität pro Minute",
+                            xaxis_title="Zeit",
+                            height=200,
+                            template="simple_white",
+                            yaxis=dict(showticklabels=False)
+                        )
+                        
+                        st.plotly_chart(fig_intensity, use_container_width=True)
+                        
+                        # Add intensity statistics
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("🔥 Durchschnittliche Intensität", f"{np.mean(intensity_data):.1f}%")
+                        col2.metric("🚀 Maximale Intensität", f"{np.max(intensity_data):.1f}%")
+                        col3.metric("⚡ Intensitätsschwankung", f"{np.std(intensity_data):.1f}%")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Fehler beim Erstellen der Intensitäts-Heatmap: {e}")
+
+                with heatmap_tab3:
+                    st.subheader("🗺️ Geografische Route")
+                    st.write("Diese Karte zeigt die zurückgelegte Route (falls GPS-Daten verfügbar).")
+                    
+                    try:
+                        lat_data, lon_data = create_geographic_heatmap(filtered)
+                        
+                        if lat_data is not None and lon_data is not None:
+                            # Create map with route
+                            fig_map = go.Figure(go.Scattermapbox(
+                                lat=lat_data,
+                                lon=lon_data,
+                                mode='markers+lines',
+                                marker=dict(size=4, color='red'),
+                                line=dict(width=2, color='red'),
+                                name='Route'
+                            ))
+                            
+                            fig_map.update_layout(
+                                mapbox_style="open-street-map",
+                                mapbox=dict(
+                                    center=dict(lat=np.mean(lat_data), lon=np.mean(lon_data)),
+                                    zoom=12
+                                ),
+                                height=500,
+                                margin=dict(l=0, r=0, t=0, b=0)
+                            )
+                            
+                            st.plotly_chart(fig_map, use_container_width=True)
+                        else:
+                            st.info("📍 Keine GPS-Daten in dieser Aktivität verfügbar.")
+                            
+                    except Exception as e:
+                        st.error(f"❌ Fehler beim Erstellen der Karte: {e}")
+
         # FIT-IMPORT SECTION
         elif admin_tab == "📥 FIT-Import":
             st.title("📥 .fit-Datei hochladen & Benutzer zuweisen")
@@ -1885,7 +2148,8 @@ if credentials['usernames']:
                 selected_user_label = st.selectbox("👤 Benutzer auswählen", list(user_map.keys()))
                 selected_user_id = user_map[selected_user_label]
 
-                # Get all associated .fit files
+                
+                # Get all associated .fit files and filter by available ones
                 conn = sqlite3.connect("personen.db")
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -1899,9 +2163,16 @@ if credentials['usernames']:
                 if not user_files:
                     st.info("📭 Dieser Benutzer hat noch keine .fit-Dateien.")
                 else:
-                    file_labels = [f"{f[0]} – {f[1][:19]}" for f in user_files]
-                    selected_label = st.selectbox("📁 Datei auswählen", file_labels)
-                    selected_file = selected_label.split(" – ")[0]
+                    # Load data and filter available files
+                    data_dict = load_sports_data_cached()
+                    available_files = [f for f in user_files if f[0] in data_dict and data_dict[f[0]] is not None]
+                    
+                    if not available_files:
+                        st.warning("📭 Keine gültigen .fit-Dateien für diesen Benutzer gefunden.")
+                    else:
+                        file_labels = [f"{f[0]} – {f[1][:19]}" for f in available_files]
+                        selected_label = st.selectbox("📁 Datei auswählen", file_labels)
+                        selected_file = selected_label.split(" – ")[0]
 
                     full_path = os.path.join("data/sports_data", selected_file)
                     if not os.path.exists(full_path):
@@ -1919,7 +2190,9 @@ if credentials['usernames']:
                                 st.error("❌ Fehler beim Einlesen der Datei!")
                             else:
                                 data = data_dict[selected_file]
-                                if len(data["time"]) == 0:
+                                if data is None:
+                                    st.error("❌ Datei konnte nicht geladen werden oder ist beschädigt.")
+                                elif len(data["time"]) == 0:
                                     st.warning("⚠️ Datei enthält keine Zeitdaten.")
                                 else:
                                     total_duration = data["time"][-1] - data["time"][0]
