@@ -919,226 +919,193 @@ if credentials['usernames']:
                                     time_data = None
                                     sampling_rate = 500  # Default sampling rate
                                     ekg_obj = None
-                                    use_ekg_class = True
+                                    use_ekg_class = False
                                     avg_hr = None
                                     max_hr = None
-                                    
-                                    # Try to load EKG data using existing EKG_data class first (priority)
-                                    try:
-                                        ekg_obj = EKG_data.load_by_id(int(selected_ekg_id))
-                                        
-                                        # Calculate metrics using original method
-                                        birth_year = int(user_data[7][:4]) if len(user_data) > 7 and user_data[7] else 1990
-                                        gender = user_data[8] if len(user_data) > 8 and user_data[8] else 'male'
-                                        hr_info = ekg_obj.calc_max_heart_rate(birth_year, gender)
-                                        max_hr = hr_info['max_hr']
-                                        
-                                        # Calculate average heart rate using original method
-                                        avg_hr = EKG_data.average_hr(
-                                            ekg_obj.df["Messwerte in mV"], 
-                                            sampling_rate=500,
-                                            threshold=360, 
-                                            window_size=5, 
-                                            min_peak_distance=200
-                                        )
-                                        
-                                        # Extract data for plotly visualization
-                                        ekg_data = ekg_obj.df["Messwerte in mV"].values
-                                        time_data = (ekg_obj.df["time in ms"] - ekg_obj.df["time in ms"].min()) / 1000.0  # Convert to seconds
-                                        
-                                        st.success("✅ EKG data loaded successfully using EKG_data class")
-                                        
-                                    except Exception as e:
-                                        st.warning(f"⚠️ EKG_data class loading failed: {e}")
-                                        use_ekg_class = False
-                                        
-                                        # Fallback: Direct file loading with Plotly visualization
-                                        if result_link and os.path.exists(result_link):
-                                            try:
-                                                st.info("🔄 Loading EKG data file directly...")
+                                
+                                    # Fallback: Direct file loading with Plotly visualization
+                                    if result_link and os.path.exists(result_link):
+                                        try:
+                                            
+                                            # Determine file format and load accordingly
+                                            if result_link.endswith('.csv'):
+                                                df = pd.read_csv(result_link)
+                                            elif result_link.endswith('.txt'):
+                                                # Try different separators for text files
+                                                separators = ['\t', ';', ',', ' ']
+                                                df = None
+                                                for sep in separators:
+                                                    try:
+                                                        df = pd.read_csv(result_link, sep=sep, header=None)  # No header assumption
+                                                        if df.shape[1] >= 2:  # Successfully parsed multiple columns
+                                                            break
+                                                    except:
+                                                        continue
                                                 
-                                                # Determine file format and load accordingly
-                                                if result_link.endswith('.csv'):
-                                                    df = pd.read_csv(result_link)
-                                                elif result_link.endswith('.txt'):
-                                                    # Try different separators for text files
-                                                    separators = ['\t', ';', ',', ' ']
-                                                    df = None
-                                                    for sep in separators:
-                                                        try:
-                                                            df = pd.read_csv(result_link, sep=sep, header=None)  # No header assumption
-                                                            if df.shape[1] >= 2:  # Successfully parsed multiple columns
-                                                                break
-                                                        except:
-                                                            continue
-                                                    
-                                                    if df is None or df.shape[1] < 2:
-                                                        # Try reading as space-separated
-                                                        df = pd.read_csv(result_link, delim_whitespace=True, header=None)
-                                                else:
-                                                    df = pd.read_csv(result_link, header=None)
+                                                if df is None or df.shape[1] < 2:
+                                                    # Try reading as space-separated
+                                                    df = pd.read_csv(result_link, delim_whitespace=True, header=None)
+                                            else:
+                                                df = pd.read_csv(result_link, header=None)
+                                
+                                            
+                                            # Debug: Show first few rows
+                                            with st.expander("🔍 Data Preview"):
+                                                st.write("First 10 rows of loaded data:")
+                                                st.dataframe(df.head(10))
+                                                st.write(f"Data shape: {df.shape}")
+                                                st.write(f"Columns: {list(df.columns)}")
+                                            
+                                            # Auto-detect EKG and time columns
+                                            if df.shape[1] >= 2:
+                                                # For EKG data: Column 0 = EKG values (mV), Column 1 = Time
+                                                ekg_column = df.columns[0]  # EKG values
+                                                time_column = df.columns[1]  # Time values
                                                 
-                                                st.success("✅ File loaded successfully with direct method")
+                                                # Extract data
+                                                ekg_data = df[ekg_column].values.astype(float)
+                                                time_data_raw = df[time_column].values.astype(float)
                                                 
-                                                # Debug: Show first few rows
-                                                with st.expander("🔍 Data Preview"):
-                                                    st.write("First 10 rows of loaded data:")
-                                                    st.dataframe(df.head(10))
-                                                    st.write(f"Data shape: {df.shape}")
-                                                    st.write(f"Columns: {list(df.columns)}")
+                                                # Fix time data conversion - data is sampled at 500 Hz
+                                                sampling_rate = 500
                                                 
-                                                # Auto-detect EKG and time columns
-                                                if df.shape[1] >= 2:
-                                                    # For EKG data: Column 0 = EKG values (mV), Column 1 = Time
-                                                    ekg_column = df.columns[0]  # EKG values
-                                                    time_column = df.columns[1]  # Time values
+                                                # Check if time data looks like sample indices or actual time
+                                                if time_data_raw.max() > 100000:  # Likely sample indices or large time values
+                                                    # Convert to seconds - use correct 500 Hz sampling rate
+                                                    time_data = (time_data_raw - time_data_raw.min()) / sampling_rate
+                                                elif time_data_raw.max() > 1000:  # Likely milliseconds
+                                                    time_data = (time_data_raw - time_data_raw.min()) / 1000.0
+                                                else:  # Already in seconds or very short recording
+                                                    time_data = time_data_raw - time_data_raw.min()
                                                     
-                                                    # Extract data
-                                                    ekg_data = df[ekg_column].values.astype(float)
-                                                    time_data_raw = df[time_column].values.astype(float)
-                                                    
-                                                    # Fix time data conversion - data is sampled at 500 Hz
-                                                    sampling_rate = 500
-                                                    
-                                                    # Check if time data looks like sample indices or actual time
-                                                    if time_data_raw.max() > 100000:  # Likely sample indices or large time values
-                                                        # Convert to seconds - use correct 500 Hz sampling rate
-                                                        time_data = (time_data_raw - time_data_raw.min()) / sampling_rate
-                                                    elif time_data_raw.max() > 1000:  # Likely milliseconds
-                                                        time_data = (time_data_raw - time_data_raw.min()) / 1000.0
-                                                    else:  # Already in seconds or very short recording
-                                                        time_data = time_data_raw - time_data_raw.min()
-                                                        
-                                                    # Ensure time data is monotonically increasing
-                                                    if len(time_data) > 1 and time_data[1] < time_data[0]:
-                                                        time_data = np.arange(len(ekg_data)) / sampling_rate
-                                                    
-                                                    # Ensure time data is monotonically increasing
-                                                    if len(time_data) > 1 and time_data[1] < time_data[0]:
-                                                        time_data = np.arange(len(ekg_data)) / sampling_rate
-                                                    
-                                                    st.success(f"✅ Data extracted: {len(ekg_data)} samples")
-                                                    st.info(f"Time range: {time_data.min():.2f} to {time_data.max():.2f} seconds")
-                                                    
-                                                    # Calculate metrics using improved peak detection
-                                                    birth_year = int(user_data[7][:4]) if len(user_data) > 7 and user_data[7] and user_data[7] != 'N/A' else 1990
-                                                    age = 2025 - birth_year
-                                                    max_hr = 220 - age  # Simple formula
+                                                # Ensure time data is monotonically increasing
+                                                if len(time_data) > 1 and time_data[1] < time_data[0]:
+                                                    time_data = np.arange(len(ekg_data)) / sampling_rate
+                                                
+                                                # Ensure time data is monotonically increasing
+                                                if len(time_data) > 1 and time_data[1] < time_data[0]:
+                                                    time_data = np.arange(len(ekg_data)) / sampling_rate
+                                                
+
+                                                
+                                                # Calculate metrics using improved peak detection
+                                                birth_year = int(user_data[7][:4]) if len(user_data) > 7 and user_data[7] and user_data[7] != 'N/A' else 1990
+                                                age = 2025 - birth_year
+                                                max_hr = 220 - age  # Simple formula
+
+                                                
+                                                # Improved heart rate calculation with proper time handling
+                                                hr_result, hr_message = streamlit_heart_rate_calculation(
+                                                    ekg_data, 
+                                                    time_data_raw,  # Use raw time data - function will handle conversion
+                                                    sampling_rate=500
+                                                )
+
+                                                # Store peaks for visualization - IMPROVED VERSION
+                                                peaks = None
+                                                if hr_result is not None:
+                                                    avg_hr = hr_result
 
                                                     
-                                                    # Improved heart rate calculation with proper time handling
-                                                    hr_result, hr_message = streamlit_heart_rate_calculation(
-                                                        ekg_data, 
-                                                        time_data_raw,  # Use raw time data - function will handle conversion
-                                                        sampling_rate=500
-                                                    )
-
-                                                    # Store peaks for visualization - IMPROVED VERSION
-                                                    peaks = None
-                                                    if hr_result is not None:
-                                                        avg_hr = hr_result
-                                                        st.success(f"✅ Heart rate calculated: {avg_hr:.1f} bpm")
-                                                        st.info(f"📊 Details: {hr_message}")
-                                                        
-                                                        # Extract peaks for visualization using the same algorithm
-                                                        peaks = extract_peaks_for_visualization(ekg_data, time_data, sampling_rate=500)
+                                                    # Extract peaks for visualization using the same algorithm
+                                                    peaks = extract_peaks_for_visualization(ekg_data, time_data, sampling_rate=500)
+                                                    
+                                                    if peaks is not None and len(peaks) > 0:
+                                                        st.info(f"🎯 Found {len(peaks)} peaks for visualization")
+                                                    else:
+                                                        st.warning("⚠️ Could not extract peaks for visualization")
+                                                            
+                                                    # Show diagnostic information
+                                                    with st.expander("🔍 Heart Rate Calculation Details"):
+                                                        st.write(f"**Calculated HR:** {avg_hr:.1f} bpm")
+                                                        st.write(f"**Calculation details:** {hr_message}")
+                                                        st.write(f"**Age:** {age} years (estimated)")
+                                                        st.write(f"**Max HR (220-age):** {max_hr} bpm")
+                                                        st.write(f"**HR as % of max:** {(avg_hr/max_hr)*100:.1f}%")
+                                                        st.write(f"**Time range:** {time_data.min():.2f} to {time_data.max():.2f} seconds")
+                                                        st.write(f"**EKG signal range:** {ekg_data.min():.2f} to {ekg_data.max():.2f} mV")
+                                                        st.write(f"**Signal duration:** {(time_data.max() - time_data.min()):.2f} seconds")
+                                                        st.write(f"**Sampling rate:** 500 Hz")
+                                                        st.write(f"**Total samples:** {len(ekg_data)}")
                                                         
                                                         if peaks is not None and len(peaks) > 0:
-                                                            st.info(f"🎯 Found {len(peaks)} peaks for visualization")
-                                                        else:
-                                                            st.warning("⚠️ Could not extract peaks for visualization")
-                                                            
-                                                        # Show diagnostic information
-                                                        with st.expander("🔍 Heart Rate Calculation Details"):
-                                                            st.write(f"**Calculated HR:** {avg_hr:.1f} bpm")
-                                                            st.write(f"**Calculation details:** {hr_message}")
-                                                            st.write(f"**Age:** {age} years (estimated)")
-                                                            st.write(f"**Max HR (220-age):** {max_hr} bpm")
-                                                            st.write(f"**HR as % of max:** {(avg_hr/max_hr)*100:.1f}%")
-                                                            st.write(f"**Time range:** {time_data.min():.2f} to {time_data.max():.2f} seconds")
-                                                            st.write(f"**EKG signal range:** {ekg_data.min():.2f} to {ekg_data.max():.2f} mV")
-                                                            st.write(f"**Signal duration:** {(time_data.max() - time_data.min()):.2f} seconds")
-                                                            st.write(f"**Sampling rate:** 500 Hz")
-                                                            st.write(f"**Total samples:** {len(ekg_data)}")
-                                                            
-                                                            if peaks is not None and len(peaks) > 0:
-                                                                st.write(f"**Peaks found:** {len(peaks)}")
-                                                                # Show first few peak times
-                                                                if len(peaks) > 0:
-                                                                    peak_times_sample = time_data[peaks[:min(5, len(peaks))]]
-                                                                    st.write(f"**First few peak times:** {[f'{t:.2f}s' for t in peak_times_sample]}")
-                                                                    
-                                                                    # Calculate and show RR intervals
-                                                                    if len(peaks) > 1:
-                                                                        peak_times_all = time_data[peaks]
-                                                                        rr_intervals = np.diff(peak_times_all)
-                                                                        st.write(f"**RR intervals (first 5):** {[f'{rr:.3f}s' for rr in rr_intervals[:5]]}")
-                                                                        st.write(f"**Avg RR interval:** {np.mean(rr_intervals):.3f}s")
-                                                                        st.write(f"**HR from RR:** {60/np.mean(rr_intervals):.1f} bpm")
-                                                    else:
-                                                        avg_hr = None
-                                                        peaks = None
-                                                        st.error(f"❌ Heart rate calculation failed: {hr_message}")
-                                                        
-                                                        # Enhanced debugging information
-                                                        with st.expander("🔧 Enhanced Debugging Information"):
-                                                            st.write(f"**Error:** {hr_message}")
-                                                            st.write(f"**Data shape:** {len(ekg_data)} samples")
-                                                            st.write(f"**Time range:** {time_data_raw.min():.0f} to {time_data_raw.max():.0f}")
-                                                            st.write(f"**EKG range:** {np.min(ekg_data):.3f} to {np.max(ekg_data):.3f} mV")
-                                                            st.write(f"**EKG std:** {np.std(ekg_data):.3f} mV")
-                                                            st.write(f"**EKG mean:** {np.mean(ekg_data):.3f} mV")
-                                                            
-                                                            # Show signal statistics
-                                                            ekg_filtered = ekg_data - np.mean(ekg_data)
-                                                            st.write(f"**Filtered EKG range:** {np.min(ekg_filtered):.3f} to {np.max(ekg_filtered):.3f} mV")
-                                                            st.write(f"**Filtered EKG std:** {np.std(ekg_filtered):.3f} mV")
-                                                            
-                                                            # Show a simple signal preview
-                                                            st.write("**Signal Preview (first 1000 samples):**")
-                                                            try:
-                                                                import matplotlib.pyplot as plt
-                                                                fig, ax = plt.subplots(figsize=(12, 4))
-                                                                sample_size = min(1000, len(ekg_data))
-                                                                sample_time = time_data[:sample_size] if len(time_data) >= sample_size else time_data
-                                                                sample_ekg = ekg_data[:sample_size]
+                                                            st.write(f"**Peaks found:** {len(peaks)}")
+                                                            # Show first few peak times
+                                                            if len(peaks) > 0:
+                                                                peak_times_sample = time_data[peaks[:min(5, len(peaks))]]
+                                                                st.write(f"**First few peak times:** {[f'{t:.2f}s' for t in peak_times_sample]}")
                                                                 
-                                                                ax.plot(sample_time, sample_ekg, 'b-', linewidth=0.8)
-                                                                ax.set_xlabel('Time (s)')
-                                                                ax.set_ylabel('Amplitude (mV)')
-                                                                ax.set_title('EKG Signal Preview')
-                                                                ax.grid(True, alpha=0.3)
-                                                                
-                                                                # Add threshold line for reference
-                                                                signal_abs = np.abs(ekg_filtered[:sample_size])
-                                                                threshold = np.percentile(signal_abs, 85)
-                                                                ax.axhline(y=threshold, color='r', linestyle='--', alpha=0.7, label=f'Threshold: {threshold:.3f}mV')
-                                                                ax.axhline(y=-threshold, color='r', linestyle='--', alpha=0.7)
-                                                                ax.legend()
-                                                                
-                                                                plt.tight_layout()
-                                                                st.pyplot(fig)
-                                                            except Exception as plot_error:
-                                                                st.write(f"Could not generate debug plot: {plot_error}")
-                                                    
-
+                                                                # Calculate and show RR intervals
+                                                                if len(peaks) > 1:
+                                                                    peak_times_all = time_data[peaks]
+                                                                    rr_intervals = np.diff(peak_times_all)
+                                                                    st.write(f"**RR intervals (first 5):** {[f'{rr:.3f}s' for rr in rr_intervals[:5]]}")
+                                                                    st.write(f"**Avg RR interval:** {np.mean(rr_intervals):.3f}s")
+                                                                    st.write(f"**HR from RR:** {60/np.mean(rr_intervals):.1f} bpm")
                                                 else:
-                                                    st.error("❌ Need at least 2 columns for EKG analysis")
-                                                    ekg_data = None
-                                                    time_data = None
                                                     avg_hr = None
-                                                    max_hr = None
+                                                    peaks = None
+                                                    st.error(f"❌ Heart rate calculation failed: {hr_message}")
                                                     
-                                            except Exception as e:
-                                                st.error(f"❌ Error loading file directly: {e}")
-                                                import traceback
-                                                with st.expander("🔧 Error Details"):
-                                                    st.code(traceback.format_exc())
-                                                max_hr = None
-                                                avg_hr = None
+                                                    # Enhanced debugging information
+                                                    with st.expander("🔧 Enhanced Debugging Information"):
+                                                        st.write(f"**Error:** {hr_message}")
+                                                        st.write(f"**Data shape:** {len(ekg_data)} samples")
+                                                        st.write(f"**Time range:** {time_data_raw.min():.0f} to {time_data_raw.max():.0f}")
+                                                        st.write(f"**EKG range:** {np.min(ekg_data):.3f} to {np.max(ekg_data):.3f} mV")
+                                                        st.write(f"**EKG std:** {np.std(ekg_data):.3f} mV")
+                                                        st.write(f"**EKG mean:** {np.mean(ekg_data):.3f} mV")
+                                                        
+                                                        # Show signal statistics
+                                                        ekg_filtered = ekg_data - np.mean(ekg_data)
+                                                        st.write(f"**Filtered EKG range:** {np.min(ekg_filtered):.3f} to {np.max(ekg_filtered):.3f} mV")
+                                                        st.write(f"**Filtered EKG std:** {np.std(ekg_filtered):.3f} mV")
+                                                        
+                                                        # Show a simple signal preview
+                                                        st.write("**Signal Preview (first 1000 samples):**")
+                                                        try:
+                                                            import matplotlib.pyplot as plt
+                                                            fig, ax = plt.subplots(figsize=(12, 4))
+                                                            sample_size = min(1000, len(ekg_data))
+                                                            sample_time = time_data[:sample_size] if len(time_data) >= sample_size else time_data
+                                                            sample_ekg = ekg_data[:sample_size]
+                                                            
+                                                            ax.plot(sample_time, sample_ekg, 'b-', linewidth=0.8)
+                                                            ax.set_xlabel('Time (s)')
+                                                            ax.set_ylabel('Amplitude (mV)')
+                                                            ax.set_title('EKG Signal Preview')
+                                                            ax.grid(True, alpha=0.3)
+                                                            
+                                                            # Add threshold line for reference
+                                                            signal_abs = np.abs(ekg_filtered[:sample_size])
+                                                            threshold = np.percentile(signal_abs, 85)
+                                                            ax.axhline(y=threshold, color='r', linestyle='--', alpha=0.7, label=f'Threshold: {threshold:.3f}mV')
+                                                            ax.axhline(y=-threshold, color='r', linestyle='--', alpha=0.7)
+                                                            ax.legend()
+                                                            
+                                                            plt.tight_layout()
+                                                            st.pyplot(fig)
+                                                        except Exception as plot_error:
+                                                            st.write(f"Could not generate debug plot: {plot_error}")
+                                                
+
+                                            else:
+                                                st.error("❌ Need at least 2 columns for EKG analysis")
                                                 ekg_data = None
                                                 time_data = None
-                                    
+                                                avg_hr = None
+                                                max_hr = None
+                                                
+                                        except Exception as e:
+                                            st.error(f"❌ Error loading file directly: {e}")
+                                            import traceback
+                                            with st.expander("🔧 Error Details"):
+                                                st.code(traceback.format_exc())
+                                            max_hr = None
+                                            avg_hr = None
+                                            ekg_data = None
+                                            time_data = None
+                                
                                     # Display metrics
                                     st.header("📊 EKG-Kennzahlen")
                                     
@@ -1257,19 +1224,6 @@ if credentials['usernames']:
                                     st.header("📈 EKG Zeitreihe")
                                     plot_displayed = False  # Initialize the variable here!
 
-                                    if use_ekg_class and ekg_obj:
-                                        try:
-                                            # Use original plotly visualization
-                                            fig = ekg_obj.plot_time_series(
-                                                threshold=360,
-                                                min_peak_distance=200,
-                                                range_start=time_range[0],
-                                                range_end=time_range[1]
-                                            )
-                                            st.plotly_chart(fig, use_container_width=True, key=f"plot_{selected_ekg_id}")
-                                            plot_displayed = True
-                                        except Exception as e:
-                                            st.warning(f"⚠️ Plotly visualization failed: {e}")
 
                                     # Fallback: matplotlib visualization
                                     if not plot_displayed and ekg_data is not None and time_data is not None and len(time_data) > 0:
