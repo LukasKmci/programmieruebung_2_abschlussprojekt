@@ -499,7 +499,9 @@ if credentials['usernames']:
     
     if authentication_status == False:
         st.error('❌ Benutzername/Passwort ist falsch')
-        
+
+    elif authentication_status == None:
+        st.warning('👤 Bitte geben Sie Ihren Benutzername und Passwort ein')   
         # Registration form for new users
         with st.expander("🆕 Neuen Account erstellen"):
             st.subheader("Registrierung")
@@ -545,6 +547,8 @@ if credentials['usernames']:
                         st.error("❌ Passwort muss mindestens 6 Zeichen lang sein!")
                     elif not new_username or not new_email or not new_full_name:
                         st.error("❌ Bitte alle Pflichtfelder ausfüllen!")
+                    elif new_username in credentials['usernames']:
+                        st.error("❌ Benutzername bereits vergeben!")
                     else:
                         user_data = {
                             'username': new_username,
@@ -566,10 +570,6 @@ if credentials['usernames']:
                             st.info("🔄 Bitte laden Sie die Seite neu und loggen Sie sich ein.")
                         else:
                             st.error(f"❌ {message}")
-        
-    elif authentication_status == None:
-        st.warning('👤 Bitte geben Sie Ihren Benutzername und Passwort ein')
-        
     elif authentication_status:
         # Login successful - Update last login
         update_last_login_personen_db(username)
@@ -2150,6 +2150,8 @@ if credentials['usernames']:
 
                         st.success(f"✅ Datei erfolgreich hochgeladen und Benutzer zugewiesen: {selected_user_label}")
 
+        # REPLACE THE PROBLEMATIC SECTION IN "📂 FIT-Dateien" with this code:
+
         # FIT-FILES DISPLAY SECTION (Admin only)
         elif current_user_role == 'admin' and admin_tab == "📂 FIT-Dateien":
             st.title("📂 Zugeordnete .fit-Dateien anzeigen")
@@ -2169,8 +2171,7 @@ if credentials['usernames']:
                 selected_user_label = st.selectbox("👤 Benutzer auswählen", list(user_map.keys()))
                 selected_user_id = user_map[selected_user_label]
 
-                
-                # Get all associated .fit files and filter by available ones
+                # Get all associated .fit files from database
                 conn = sqlite3.connect("personen.db")
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -2184,10 +2185,28 @@ if credentials['usernames']:
                 if not user_files:
                     st.info("📭 Dieser Benutzer hat noch keine .fit-Dateien.")
                 else:
-                    # Load data and filter available files
-                    data_dict = load_sports_data_cached()
-                    available_files = [f for f in user_files if f[0] in data_dict and data_dict[f[0]] is not None]
-                    
+                    # Check which files actually exist and can be loaded (same logic as training section)
+                    available_files = []
+                    data_dir = "data/sports_data"
+
+                    for f in user_files:
+                        filename = f[0]
+                        file_path = os.path.join(data_dir, filename)
+                        
+                        # Check if file exists
+                        if os.path.exists(file_path):
+                            try:
+                                # Try to load the file
+                                from fitparse import FitFile
+                                fitfile = FitFile(file_path)
+                                records = list(fitfile.get_messages('record'))
+                                
+                                if len(records) > 0:
+                                    available_files.append(f)
+                                    
+                            except Exception as e:
+                                pass  # Skip corrupted files
+
                     if not available_files:
                         st.warning("📭 Keine gültigen .fit-Dateien für diesen Benutzer gefunden.")
                     else:
@@ -2195,44 +2214,110 @@ if credentials['usernames']:
                         selected_label = st.selectbox("📁 Datei auswählen", file_labels)
                         selected_file = selected_label.split(" – ")[0]
 
-                    full_path = os.path.join("data/sports_data", selected_file)
-                    if not os.path.exists(full_path):
-                        st.error("❌ Datei nicht gefunden!")
-                    else:
-                        st.success(f"✅ Datei geladen: `{selected_file}`")
+                        full_path = os.path.join("data/sports_data", selected_file)
+                        if not os.path.exists(full_path):
+                            st.error("❌ Datei nicht gefunden!")
+                        else:
+                            st.success(f"✅ Datei geladen: `{selected_file}`")
 
-                        # Analyze with existing logic from sport_data
-                        try:
-                            from fitparse import FitFile
-
-                            # Load only this file
-                            data_dict = load_sports_data()
-                            if selected_file not in data_dict:
-                                st.error("❌ Fehler beim Einlesen der Datei!")
-                            else:
-                                data = data_dict[selected_file]
-                                if data is None:
-                                    st.error("❌ Datei konnte nicht geladen werden oder ist beschädigt.")
-                                elif len(data["time"]) == 0:
-                                    st.warning("⚠️ Datei enthält keine Zeitdaten.")
+                            # Analyze the selected file
+                            try:
+                                from fitparse import FitFile
+                                fitfile = FitFile(full_path)
+                                
+                                # Extract data from the FIT file (same as training section)
+                                time_data = []
+                                heartrate_data = []
+                                velocity_data = []
+                                power_data = []
+                                cadence_data = []
+                                altitude_data = []
+                                temperature_data = []
+                                distance_data = []
+                                position_lat_data = []
+                                position_long_data = []
+                                
+                                for record in fitfile.get_messages('record'):
+                                    timestamp = None
+                                    for field in record.fields:
+                                        if field.name == 'timestamp':
+                                            if hasattr(field.value, 'timestamp'):
+                                                timestamp = field.value.timestamp()
+                                            else:
+                                                timestamp = field.value
+                                    
+                                    if timestamp is not None:
+                                        time_data.append(timestamp)
+                                        
+                                        # Extract other values
+                                        hr = next((f.value for f in record.fields if f.name == 'heart_rate'), 0)
+                                        vel = next((f.value for f in record.fields if f.name == 'speed'), 0)
+                                        pow = next((f.value for f in record.fields if f.name == 'power'), 0)
+                                        cad = next((f.value for f in record.fields if f.name == 'cadence'), 0)
+                                        alt = next((f.value for f in record.fields if f.name == 'altitude'), 0)
+                                        temp = next((f.value for f in record.fields if f.name == 'temperature'), 0)
+                                        dist = next((f.value for f in record.fields if f.name == 'distance'), 0)
+                                        lat = next((f.value for f in record.fields if f.name == 'position_lat'), 0)
+                                        lon = next((f.value for f in record.fields if f.name == 'position_long'), 0)
+                                        
+                                        heartrate_data.append(hr if hr is not None else 0)
+                                        velocity_data.append(vel if vel is not None else 0)
+                                        power_data.append(pow if pow is not None else 0)
+                                        cadence_data.append(cad if cad is not None else 0)
+                                        altitude_data.append(alt if alt is not None else 0)
+                                        temperature_data.append(temp if temp is not None else 0)
+                                        distance_data.append(dist if dist is not None else 0)
+                                        position_lat_data.append(lat if lat is not None else 0)
+                                        position_long_data.append(lon if lon is not None else 0)
+                                
+                                if len(time_data) == 0:
+                                    st.error("❌ No time data found in file")
                                 else:
-                                    total_duration = data["time"][-1] - data["time"][0]
-                                    time_range = st.slider("Zeitauswahl (min)", 0.0, total_duration / 60, (0.0, total_duration / 60), step=0.5)
+                                    import numpy as np
+                                    data = {
+                                        'time': np.array(time_data),
+                                        'heartrate': np.array(heartrate_data),
+                                        'velocity': np.array(velocity_data),
+                                        'power': np.array(power_data),
+                                        'cadence': np.array(cadence_data),
+                                        'altitude': np.array(altitude_data),
+                                        'temperature': np.array(temperature_data),
+                                        'distance': np.array(distance_data),        
+                                        'position_lat': np.array(position_lat_data),
+                                        'position_long': np.array(position_long_data)
+                                    }
+                                    
+                                    st.success(f"✅ File loaded successfully: {len(time_data)} data points")
+                                    
+                                    # Calculate total duration for the slider
+                                    total_duration = float(data['time'][-1] - data['time'][0])
+                                    
+                                    # Time selection slider
+                                    time_range = st.slider(
+                                        "⏱️ Zeitraum wählen (min)",
+                                        min_value=0.0,
+                                        max_value=float(total_duration) / 60,
+                                        value=(0.0, float(total_duration) / 60),
+                                        step=0.5,
+                                        format="%.1f min"
+                                    )
 
+                                    # Filter data based on selected time range
                                     start_percent = (time_range[0] * 60) / total_duration * 100
                                     end_percent = (time_range[1] * 60) / total_duration * 100
-
+                                    
                                     filtered = filter_data_by_time_range(data, start_percent, end_percent)
                                     stats = calculate_filtered_stats(filtered)
 
-                                    st.markdown("### 📊 Analyseergebnisse")
+                                    st.markdown("### 📊 Analyseergebnisse Overview")
                                     col1, col2, col3, col4 = st.columns(4)
-                                    col1.metric("Distanz", f"{stats['total_distance_km']:.2f} km")
-                                    col2.metric("Ø Herzfrequenz", f"{stats['avg_heartrate']:.0f} bpm")
-                                    col3.metric("Ø Geschwindigkeit", f"{stats['avg_speed_kmh']:.1f} km/h")
-                                    col4.metric("Dauer", format_duration(stats['duration_seconds']))
-                        except Exception as e:
-                            st.error(f"❌ Fehler beim Analysieren der Datei: {e}")
+                                    col1.metric("⏱️ Dauer", format_duration(stats['duration_seconds']))
+                                    col2.metric("📏 Distanz", f"{stats['total_distance_km']:.2f} km")
+                                    col3.metric("🏃‍♂️ Ø Geschwindigkeit", f"{stats['avg_speed_kmh']:.1f} km/h")
+                                    col4.metric("❤️ Ø Herzfrequenz", f"{stats['avg_heartrate']:.0f} bpm")
+                                    
+                            except Exception as e:
+                                st.error(f"❌ Fehler beim Analysieren der Datei: {e}")
 
 else:
     st.error("❌ Keine Benutzer in der Datenbank gefunden. Bitte kontaktieren Sie den Administrator.")
