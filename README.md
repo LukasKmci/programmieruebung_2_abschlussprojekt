@@ -46,11 +46,11 @@ Automatisch berechnete Kennwerte:
     pdm run streamlit run main.py
     ```
 ### 🖼️ APP Screenshot – Login
-
+![alt text](image.png)
 ### 🖼️ APP Screenshot – Benutzer erstellen
-
+![alt text](image-1.png)
 ### 🖼️ APP Screenshot – Benutzer löschen
-
+![alt text](image-2.png)
 ### 🖼️ APP Screenshot – EKG Analyse
 
 ### 🖼️ APP Screenshot – Trainings
