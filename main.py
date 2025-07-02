@@ -1343,51 +1343,6 @@ if credentials['usernames']:
                                     if not plot_displayed:
                                         st.error("❌ EKG-Visualisierung nicht verfügbar")
                                         st.info("💡 Überprüfen Sie, ob die EKG-Datei korrekt gespeichert wurde.")
-
-                                    # Enhanced analysis section
-                                    if ekg_data is not None and time_data is not None:
-                                        with st.expander("📊 Erweiterte Analyse"):
-                                            col1, col2 = st.columns(2)
-                                            
-                                            # Filter data for current time range
-                                            mask = (time_data >= time_range[0]) & (time_data <= time_range[1])
-                                            plot_ekg = ekg_data[mask]
-                                            plot_time = time_data[mask]
-                                            
-                                            if len(plot_ekg) > 0:
-                                                with col1:
-                                                    st.write("**Signal Statistiken:**")
-                                                    st.write(f"- Min: {plot_ekg.min():.2f} mV")
-                                                    st.write(f"- Max: {plot_ekg.max():.2f} mV")
-                                                    st.write(f"- Mittelwert: {plot_ekg.mean():.2f} mV")
-                                                    st.write(f"- Standardabweichung: {plot_ekg.std():.2f} mV")
-                                                    st.write(f"- Samples: {len(plot_ekg)}")
-                                                
-                                                with col2:
-                                                    if 'peaks' in locals() and peaks is not None and len(peaks) > 0:
-                                                        # Calculate RR intervals for matplotlib version
-                                                        peak_indices_in_range = peaks[(peaks < len(time_data)) &
-                                                                                    (time_data[peaks] >= time_range[0]) & 
-                                                                                    (time_data[peaks] <= time_range[1])]
-                                                        if len(peak_indices_in_range) > 1:
-                                                            rr_intervals = np.diff(time_data[peak_indices_in_range])
-                                                            st.write("**Herzrhythmus Analyse:**")
-                                                            st.write(f"- RR-Intervall Ø: {rr_intervals.mean():.3f} s")
-                                                            st.write(f"- RR-Intervall Std: {rr_intervals.std():.3f} s")
-                                                            if len(rr_intervals) > 1:
-                                                                st.write(f"- HRV (RMSSD): {np.sqrt(np.mean(np.diff(rr_intervals)**2)):.3f} s")
-                                                            st.write(f"- Peaks gefunden: {len(peak_indices_in_range)}")
-                                                        else:
-                                                            st.write("**Herzrhythmus Analyse:**")
-                                                            st.write("- Zu wenige Peaks für Analyse")
-                                                            st.write(f"- Peaks im Bereich: {len(peak_indices_in_range) if 'peak_indices_in_range' in locals() else 0}")
-                                                    else:
-                                                        st.write("**Herzrhythmus Analyse:**")
-                                                        st.write("- Keine Peaks erkannt")
-                                                        st.write("- Prüfen Sie die Signalqualität")
-                                            else:
-                                                st.warning("⚠️ Keine Daten im gewählten Zeitbereich verfügbar")
-                                                st.info(f"Verfügbarer Zeitbereich: {time_data.min():.1f} - {time_data.max():.1f} Sekunden")
                                     
                                     # Enhanced analysis section
                                     if ekg_data is not None and time_data is not None:
