@@ -876,14 +876,10 @@ if credentials['usernames']:
                         st.header("📋 Ihre EKG-Analyse")
                         st.markdown(f"**👤 Analysiert:** {selected_user_name}")
                         st.markdown(f"**📊 EKG-Tests:** {ekg_count}")
-                
-        
 
-                    # Main EKG analysis content
-                    if selected_user_name:
+                    # Main EKG analysis content - FIXED SECTION
+                    if selected_user_name and selected_user_id:
                         try:
-                            selected_user_id = user_options[selected_user_name]
-                            
                             # Get user data from database with correct column names
                             conn = sqlite3.connect('personen.db')
                             cursor = conn.cursor()
@@ -1258,51 +1254,120 @@ if credentials['usernames']:
 
                                         with col2:
                                             # Calculate average heart rate in selected time range
-                                            if time_data is not None and ekg_data is not None and time_range[0] != time_range[1]:
+                                            if time_data is not None and ekg_data is not None and len(time_data) > 0 and time_range[0] != time_range[1]:
                                                 try:
+                                                    # Create mask for selected time range
                                                     mask = (time_data >= time_range[0]) & (time_data <= time_range[1])
                                                     range_ekg_data = ekg_data[mask]
                                                     range_time_data = time_data[mask]
                                                     
-                                                    if len(range_ekg_data) > 0:
-                                                        if use_ekg_class:
-                                                            # Use original method for range calculation
-                                                            range_hr = EKG_data.average_hr(
-                                                                pd.Series(range_ekg_data),
-                                                                sampling_rate=500,
-                                                                threshold=360,
-                                                                window_size=5,
-                                                                min_peak_distance=200
-                                                            )
-                                                        else:
-                                                            # Use fallback method
-                                                            range_peaks, _ = find_peaks(range_ekg_data, 
-                                                                                    height=np.percentile(range_ekg_data, 75),
-                                                                                    distance=int(0.6 * sampling_rate))
-                                                            if len(range_peaks) > 1:
-                                                                range_duration = range_time_data[-1] - range_time_data[0]
-                                                                range_hr = (len(range_peaks) / range_duration) * 60
-                                                            else:
-                                                                range_hr = None
+                                                    if len(range_ekg_data) > 100:  # Need sufficient data points for HR calculation
+                                                        # Calculate HR for the selected range
+                                                        range_hr = None
                                                         
-                                                        if range_hr and not pd.isna(range_hr):
+                                                        # Method 1: Use existing peaks if available
+                                                        if peaks is not None and len(peaks) > 0:
+                                                            # Find peaks within the selected time range
+                                                            range_peak_indices = []
+                                                            for peak_idx in peaks:
+                                                                if peak_idx < len(time_data) and time_range[0] <= time_data[peak_idx] <= time_range[1]:
+                                                                    range_peak_indices.append(peak_idx)
+                                                            
+                                                            if len(range_peak_indices) > 1:
+                                                                # Calculate HR from peaks in range
+                                                                peak_times_in_range = time_data[range_peak_indices]
+                                                                rr_intervals = np.diff(peak_times_in_range)
+                                                                if len(rr_intervals) > 0:
+                                                                    avg_rr_interval = np.mean(rr_intervals)
+                                                                    range_hr = 60.0 / avg_rr_interval
+                                                        
+                                                        # Method 2: Fallback - detect peaks in range data only
+                                                        if range_hr is None:
+                                                            try:
+                                                                from scipy.signal import find_peaks
+                                                                
+                                                                # Normalize and filter the range data
+                                                                range_ekg_normalized = range_ekg_data - np.mean(range_ekg_data)
+                                                                
+                                                                # Dynamic threshold based on signal characteristics
+                                                                signal_std = np.std(range_ekg_normalized)
+                                                                height_threshold = max(0.5 * signal_std, np.percentile(np.abs(range_ekg_normalized), 75))
+                                                                
+                                                                # Minimum distance between peaks (0.6 seconds at 500 Hz)
+                                                                min_distance = int(0.6 * sampling_rate)
+                                                                
+                                                                # Find peaks in the range data
+                                                                range_peaks, _ = find_peaks(
+                                                                    range_ekg_normalized,
+                                                                    height=height_threshold,
+                                                                    distance=min_distance,
+                                                                    prominence=0.3 * signal_std
+                                                                )
+                                                                
+                                                                if len(range_peaks) > 1:
+                                                                    # Calculate time duration of the range
+                                                                    time_duration = range_time_data[-1] - range_time_data[0]
+                                                                    if time_duration > 0:
+                                                                        # Calculate HR from peak count and duration
+                                                                        range_hr = (len(range_peaks) / time_duration) * 60.0
+                                                                
+                                                            except ImportError:
+                                                                # Fallback if scipy is not available
+                                                                st.warning("⚠️ Advanced peak detection not available")
+                                                        
+                                                        # Display the result
+                                                        if range_hr is not None and 30 <= range_hr <= 220:  # Reasonable HR range
                                                             st.metric("💓 Bereichs-HR", f"{range_hr:.1f} bpm")
+                                                            
+                                                            # Add HR zone info for range
+                                                            if max_hr:
+                                                                range_hr_percentage = (range_hr / max_hr) * 100
+                                                                if range_hr_percentage < 50:
+                                                                    range_zone = "🟢 Ruhe"
+                                                                elif range_hr_percentage < 70:
+                                                                    range_zone = "🟡 Aerob"
+                                                                elif range_hr_percentage < 85:
+                                                                    range_zone = "🟠 Anaerob"
+                                                                else:
+                                                                    range_zone = "🔴 Maximal"
+                                                                st.caption(f"{range_zone} ({range_hr_percentage:.0f}%)")
                                                         else:
-                                                            st.warning("⚠️ HR nicht berechenbar")
+                                                            st.metric("💓 Bereichs-HR", "Nicht berechenbar")
+                                                            st.caption("Zu wenige oder ungültige Peaks")
+                                                            
                                                     else:
-                                                        st.warning("⚠️ Keine Daten im Bereich")
+                                                        st.metric("💓 Bereichs-HR", "Zu wenig Daten")
+                                                        st.caption(f"Nur {len(range_ekg_data)} Samples")
+                                                        
                                                 except Exception as e:
-                                                    st.warning(f"⚠️ Fehler bei Bereichs-HR: {str(e)[:30]}...")
+                                                    st.metric("💓 Bereichs-HR", "Fehler")
+                                                    st.caption(f"Berechnung fehlgeschlagen")
+                                                    # Optional: Show error details in expander for debugging
+                                                    with st.expander("🔧 Fehlerdetails"):
+                                                        st.error(f"Error: {str(e)}")
+                                            else:
+                                                # Handle invalid input cases
+                                                if time_data is None or ekg_data is None:
+                                                    st.metric("💓 Bereichs-HR", "Keine Daten")
+                                                elif len(time_data) == 0:
+                                                    st.metric("💓 Bereichs-HR", "Leere Daten")
+                                                elif time_range[0] == time_range[1]:
+                                                    st.metric("💓 Bereichs-HR", "Ungültiger Bereich")
+                                                else:
+                                                    st.metric("💓 Bereichs-HR", "N/A")
 
+                                        # Additional improvements for the plot_displayed initialization issue:
 
-                                        # Display plot - Priority: Original plotly method
+                                        # Initialize plot_displayed at the beginning of the EKG visualization section
                                         st.header("📈 EKG Zeitreihe")
-                                        plot_displayed = False  # Initialize the variable here!
+                                        
 
-
-                                        # Fallback: matplotlib visualization
-                                        if not plot_displayed and ekg_data is not None and time_data is not None and len(time_data) > 0:
+                                        # Also fix the plotting section to handle the case where no data is available
+                                        if ekg_data is not None and time_data is not None and len(time_data) > 0:
                                             try:
+                                                # Your existing matplotlib plotting code here...
+                                                # (the matplotlib section looks correct)
+                                                
                                                 # Create matplotlib figure
                                                 fig, ax = plt.subplots(figsize=(12, 6))
                                                 
@@ -1310,6 +1375,7 @@ if credentials['usernames']:
                                                 mask = (time_data >= time_range[0]) & (time_data <= time_range[1])
                                                 plot_time = time_data[mask]
                                                 plot_ekg = ekg_data[mask]
+                                                plot_displayed = False
                                                 
                                                 # Check if we have data in the selected range
                                                 if len(plot_time) > 0 and len(plot_ekg) > 0:
@@ -1319,9 +1385,11 @@ if credentials['usernames']:
                                                     # Plot peaks if they exist
                                                     if peaks is not None and len(peaks) > 0:
                                                         # Find peaks within the time range
-                                                        peak_indices_in_range = peaks[(peaks < len(time_data)) & 
-                                                                                    (time_data[peaks] >= time_range[0]) & 
-                                                                                    (time_data[peaks] <= time_range[1])]
+                                                        peak_indices_in_range = []
+                                                        for peak_idx in peaks:
+                                                            if (peak_idx < len(time_data) and 
+                                                                time_range[0] <= time_data[peak_idx] <= time_range[1]):
+                                                                peak_indices_in_range.append(peak_idx)
                                                         
                                                         if len(peak_indices_in_range) > 0:
                                                             peak_times = time_data[peak_indices_in_range]
@@ -1340,7 +1408,7 @@ if credentials['usernames']:
                                                                         transform=ax.transAxes, 
                                                                         verticalalignment='top',
                                                                         bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
-                                                                                                    
+                                                    
                                                     # Formatting
                                                     ax.set_xlabel('Zeit (s)')
                                                     ax.set_ylabel('Amplitude (mV)')
@@ -1355,7 +1423,7 @@ if credentials['usernames']:
                                                             verticalalignment='top',
                                                             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
                                                     
-                                                    # Tight layout and display
+                                                    # Display the plot
                                                     plt.tight_layout()
                                                     st.pyplot(fig)
                                                     plot_displayed = True
@@ -1368,7 +1436,10 @@ if credentials['usernames']:
                                                 import traceback
                                                 with st.expander("🔧 Visualization Error Details"):
                                                     st.code(traceback.format_exc())
+                                        else:
+                                            st.error("❌ No EKG data available for visualization")
 
+                                        # Final check
                                         if not plot_displayed:
                                             st.error("❌ EKG-Visualisierung nicht verfügbar")
                                             st.info("💡 Überprüfen Sie, ob die EKG-Datei korrekt gespeichert wurde.")
