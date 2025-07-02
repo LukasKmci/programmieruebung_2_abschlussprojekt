@@ -259,6 +259,194 @@ def get_user_with_ekg_data():
     conn.close()
     return users
 
+def streamlit_heart_rate_calculation(ekg_data, time_data_raw, sampling_rate=500):
+    """
+    Improved heart rate calculation for EKG data sampled at 500 Hz
+    
+    Args:
+        ekg_data: numpy array of EKG values in mV
+        time_data_raw: numpy array of raw time values (samples or ms)
+        sampling_rate: sampling frequency in Hz (default 500)
+    
+    Returns:
+        tuple: (average_heart_rate, message) or (None, error_message)
+    """
+    try:
+        from scipy.signal import find_peaks
+        import numpy as np
+        
+        # Input validation
+        if len(ekg_data) < sampling_rate:  # Less than 1 second of data
+            return None, "Insufficient data: need at least 1 second of EKG data"
+        
+        # Convert time data to seconds if needed
+        if time_data_raw.max() > 100000:  # Likely sample indices
+            time_data = time_data_raw / sampling_rate
+        elif time_data_raw.max() > 1000:  # Likely milliseconds
+            time_data = time_data_raw / 1000.0
+        else:  # Already in seconds
+            time_data = time_data_raw
+        
+        # Ensure time data starts from 0 and is monotonic
+        time_data = time_data - time_data.min()
+        total_duration = time_data.max()
+        
+        if total_duration < 2.0:  # Need at least 2 seconds for reliable HR
+            return None, f"Recording too short: {total_duration:.1f}s (need ≥2s)"
+        
+        # Preprocess EKG signal
+        # Remove DC offset
+        ekg_filtered = ekg_data - np.mean(ekg_data)
+        
+        # Simple high-pass filter to remove baseline wander
+        if len(ekg_filtered) > 100:
+            # Remove slow baseline drift using moving average
+            window_size = min(len(ekg_filtered) // 10, sampling_rate // 2)  # 0.5s window max
+            if window_size > 5:
+                moving_avg = np.convolve(ekg_filtered, np.ones(window_size)/window_size, mode='same')
+                ekg_filtered = ekg_filtered - moving_avg
+        
+        # Calculate adaptive threshold for R-peak detection
+        signal_abs = np.abs(ekg_filtered)
+        signal_std = np.std(signal_abs)
+        signal_mean = np.mean(signal_abs)
+        
+        # Lower threshold - more sensitive to catch more R-peaks
+        # Use percentile-based approach
+        threshold_base = np.percentile(signal_abs, 85)  # 85th percentile
+        threshold = max(threshold_base, signal_mean + 1.5 * signal_std)
+        
+        # Minimum distance between peaks (300ms for 500Hz = 150 samples)
+        # This prevents detecting noise as separate beats
+        min_distance_samples = int(0.3 * sampling_rate)  # 300ms minimum
+        
+        # Find peaks with relaxed parameters
+        peaks, peak_properties = find_peaks(
+            ekg_filtered,
+            height=threshold * 0.7,  # Reduce threshold by 30%
+            distance=min_distance_samples,
+            prominence=signal_std * 0.3,  # Lower prominence requirement
+            width=1  # Minimum width in samples
+        )
+        
+        # Validate peaks - remove obvious noise
+        if len(peaks) > 0:
+            peak_heights = ekg_filtered[peaks]
+            peak_times = time_data[peaks]
+            
+            # Remove peaks that are too close to start/end
+            valid_indices = (peak_times > 0.5) & (peak_times < total_duration - 0.5)
+            peaks = peaks[valid_indices]
+            peak_heights = peak_heights[valid_indices]
+            peak_times = peak_times[valid_indices]
+            
+            # Remove outlier peaks (height-based filtering)
+            if len(peaks) > 3:
+                height_median = np.median(peak_heights)
+                height_std = np.std(peak_heights)
+                height_threshold = 3 * height_std  # 3-sigma rule
+                
+                valid_height_mask = np.abs(peak_heights - height_median) < height_threshold
+                peaks = peaks[valid_height_mask]
+                peak_times = peak_times[valid_height_mask]
+        
+        # Check if we found enough peaks
+        if len(peaks) < 2:
+            # Try with even lower threshold
+            threshold_low = signal_mean + 0.5 * signal_std
+            peaks_low, _ = find_peaks(
+                ekg_filtered,
+                height=threshold_low,
+                distance=min_distance_samples,
+                prominence=signal_std * 0.1
+            )
+            
+            if len(peaks_low) >= 2:
+                peaks = peaks_low
+                peak_times = time_data[peaks]
+                # Re-filter for valid time range
+                valid_indices = (peak_times > 0.5) & (peak_times < total_duration - 0.5)
+                peaks = peaks[valid_indices]
+                peak_times = peak_times[valid_indices]
+            
+            if len(peaks) < 2:
+                return None, f"Insufficient R-peaks detected: {len(peaks)} (threshold: {threshold:.3f}mV, signal range: {ekg_filtered.min():.3f} to {ekg_filtered.max():.3f}mV)"
+        
+        # Calculate heart rate from R-R intervals
+        peak_times_sorted = np.sort(peak_times)
+        rr_intervals = np.diff(peak_times_sorted)  # Time between consecutive R-peaks
+        
+        # Filter out unrealistic RR intervals
+        # Normal RR intervals: 0.4s to 2.0s (150-30 bpm)
+        valid_rr_mask = (rr_intervals >= 0.4) & (rr_intervals <= 2.0)
+        
+        if np.sum(valid_rr_mask) < 1:
+            return None, f"No valid RR intervals found (all intervals outside 0.4-2.0s range)"
+        
+        valid_rr_intervals = rr_intervals[valid_rr_mask]
+        
+        # Calculate average heart rate
+        avg_rr_interval = np.mean(valid_rr_intervals)
+        avg_heart_rate = 60.0 / avg_rr_interval  # Convert to BPM
+        
+        # Additional validation - check if HR is in reasonable range
+        if avg_heart_rate < 30 or avg_heart_rate > 200:
+            return None, f"Calculated HR outside normal range: {avg_heart_rate:.1f} bpm"
+        
+        # Create detailed message
+        message = (f"Found {len(peaks)} R-peaks over {total_duration:.1f}s, "
+                  f"avg RR-interval: {avg_rr_interval:.3f}s, "
+                  f"valid intervals: {len(valid_rr_intervals)}/{len(rr_intervals)}")
+        
+        return avg_heart_rate, message
+        
+    except ImportError:
+        return None, "scipy.signal not available for peak detection"
+    except Exception as e:
+        return None, f"Error in heart rate calculation: {str(e)}"
+
+
+# Also update the peak detection code for visualization
+def extract_peaks_for_visualization(ekg_data, time_data, sampling_rate=500):
+    """
+    Extract R-peaks for visualization purposes
+    Returns peak indices that can be used for plotting
+    """
+    try:
+        from scipy.signal import find_peaks
+        import numpy as np
+        
+        # Same preprocessing as in heart rate calculation
+        ekg_filtered = ekg_data - np.mean(ekg_data)
+        
+        # Remove baseline drift
+        if len(ekg_filtered) > 100:
+            window_size = min(len(ekg_filtered) // 10, sampling_rate // 2)
+            if window_size > 5:
+                moving_avg = np.convolve(ekg_filtered, np.ones(window_size)/window_size, mode='same')
+                ekg_filtered = ekg_filtered - moving_avg
+        
+        # Calculate threshold
+        signal_abs = np.abs(ekg_filtered)
+        signal_std = np.std(signal_abs)
+        signal_mean = np.mean(signal_abs)
+        threshold = max(np.percentile(signal_abs, 85), signal_mean + 1.5 * signal_std)
+        
+        # Find peaks
+        min_distance_samples = int(0.3 * sampling_rate)
+        peaks, _ = find_peaks(
+            ekg_filtered,
+            height=threshold * 0.7,
+            distance=min_distance_samples,
+            prominence=signal_std * 0.3,
+            width=1
+        )
+        
+        return peaks
+        
+    except Exception:
+        return None
+    
 def init_ekg_tables():
     """Initialize EKG tables if they don't exist"""
     conn = sqlite3.connect('personen.db')
@@ -729,7 +917,7 @@ if credentials['usernames']:
                                     # Initialize variables
                                     ekg_data = None
                                     time_data = None
-                                    sampling_rate = 1000  # Default sampling rate
+                                    sampling_rate = 500  # Default sampling rate
                                     ekg_obj = None
                                     use_ekg_class = True
                                     avg_hr = None
@@ -748,7 +936,7 @@ if credentials['usernames']:
                                         # Calculate average heart rate using original method
                                         avg_hr = EKG_data.average_hr(
                                             ekg_obj.df["Messwerte in mV"], 
-                                            sampling_rate=1000,
+                                            sampling_rate=500,
                                             threshold=360, 
                                             window_size=5, 
                                             min_peak_distance=200
@@ -801,24 +989,29 @@ if credentials['usernames']:
                                                 
                                                 # Auto-detect EKG and time columns
                                                 if df.shape[1] >= 2:
-                                                    # Assume first column is EKG, second is time
-                                                    ekg_column = df.columns[0]
-                                                    time_column = df.columns[1]
+                                                    # For EKG data: Column 0 = EKG values (mV), Column 1 = Time
+                                                    ekg_column = df.columns[0]  # EKG values
+                                                    time_column = df.columns[1]  # Time values
                                                     
                                                     # Extract data
                                                     ekg_data = df[ekg_column].values.astype(float)
                                                     time_data_raw = df[time_column].values.astype(float)
                                                     
-                                                    # Fix time data conversion
+                                                    # Fix time data conversion - data is sampled at 500 Hz
+                                                    sampling_rate = 500
+                                                    
                                                     # Check if time data looks like sample indices or actual time
                                                     if time_data_raw.max() > 100000:  # Likely sample indices or large time values
-                                                        # Convert to seconds - assume 1000 Hz sampling rate
-                                                        sampling_rate = 1000
+                                                        # Convert to seconds - use correct 500 Hz sampling rate
                                                         time_data = (time_data_raw - time_data_raw.min()) / sampling_rate
                                                     elif time_data_raw.max() > 1000:  # Likely milliseconds
                                                         time_data = (time_data_raw - time_data_raw.min()) / 1000.0
                                                     else:  # Already in seconds or very short recording
                                                         time_data = time_data_raw - time_data_raw.min()
+                                                        
+                                                    # Ensure time data is monotonically increasing
+                                                    if len(time_data) > 1 and time_data[1] < time_data[0]:
+                                                        time_data = np.arange(len(ekg_data)) / sampling_rate
                                                     
                                                     # Ensure time data is monotonically increasing
                                                     if len(time_data) > 1 and time_data[1] < time_data[0]:
@@ -831,42 +1024,104 @@ if credentials['usernames']:
                                                     birth_year = int(user_data[7][:4]) if len(user_data) > 7 and user_data[7] and user_data[7] != 'N/A' else 1990
                                                     age = 2025 - birth_year
                                                     max_hr = 220 - age  # Simple formula
+
                                                     
-                                                    # Improved peak detection
-                                                    ekg_filtered = ekg_data.copy()
-                                                    
-                                                    # Calculate adaptive threshold
-                                                    ekg_mean = np.mean(ekg_filtered)
-                                                    ekg_std = np.std(ekg_filtered)
-                                                    threshold = ekg_mean + 0.5 * ekg_std  # More conservative threshold
-                                                    
-                                                    # Minimum distance between peaks (0.4 seconds = 240 beats per minute max)
-                                                    min_distance = int(0.4 * sampling_rate)
-                                                    
-                                                    # Find peaks
-                                                    peaks, properties = find_peaks(ekg_filtered, 
-                                                                                height=threshold,
-                                                                                distance=min_distance,
-                                                                                prominence=ekg_std * 0.2)  # Add prominence requirement
-                                                    
-                                                    if len(peaks) > 1:
-                                                        duration = time_data[-1] - time_data[0]  # Total duration in seconds
-                                                        avg_hr = (len(peaks) / duration) * 60  # BPM
-                                                        st.success(f"✅ Heart rate calculated: {avg_hr:.1f} bpm from {len(peaks)} peaks")
-                                                    else:
-                                                        # Try with lower threshold if no peaks found
-                                                        threshold = ekg_mean + 0.2 * ekg_std
-                                                        peaks, properties = find_peaks(ekg_filtered, 
-                                                                                    height=threshold,
-                                                                                    distance=min_distance)
-                                                        if len(peaks) > 1:
-                                                            duration = time_data[-1] - time_data[0]
-                                                            avg_hr = (len(peaks) / duration) * 60
-                                                            st.warning(f"⚠️ Used lower threshold: {avg_hr:.1f} bpm from {len(peaks)} peaks")
+                                                    # Improved heart rate calculation with proper time handling
+                                                    hr_result, hr_message = streamlit_heart_rate_calculation(
+                                                        ekg_data, 
+                                                        time_data_raw,  # Use raw time data - function will handle conversion
+                                                        sampling_rate=500
+                                                    )
+
+                                                    # Store peaks for visualization - IMPROVED VERSION
+                                                    peaks = None
+                                                    if hr_result is not None:
+                                                        avg_hr = hr_result
+                                                        st.success(f"✅ Heart rate calculated: {avg_hr:.1f} bpm")
+                                                        st.info(f"📊 Details: {hr_message}")
+                                                        
+                                                        # Extract peaks for visualization using the same algorithm
+                                                        peaks = extract_peaks_for_visualization(ekg_data, time_data, sampling_rate=500)
+                                                        
+                                                        if peaks is not None and len(peaks) > 0:
+                                                            st.info(f"🎯 Found {len(peaks)} peaks for visualization")
                                                         else:
-                                                            avg_hr = None
-                                                            st.warning(f"⚠️ No peaks detected. Threshold: {threshold:.2f}, Signal range: {ekg_filtered.min():.2f} to {ekg_filtered.max():.2f}")
-                                                
+                                                            st.warning("⚠️ Could not extract peaks for visualization")
+                                                            
+                                                        # Show diagnostic information
+                                                        with st.expander("🔍 Heart Rate Calculation Details"):
+                                                            st.write(f"**Calculated HR:** {avg_hr:.1f} bpm")
+                                                            st.write(f"**Calculation details:** {hr_message}")
+                                                            st.write(f"**Age:** {age} years (estimated)")
+                                                            st.write(f"**Max HR (220-age):** {max_hr} bpm")
+                                                            st.write(f"**HR as % of max:** {(avg_hr/max_hr)*100:.1f}%")
+                                                            st.write(f"**Time range:** {time_data.min():.2f} to {time_data.max():.2f} seconds")
+                                                            st.write(f"**EKG signal range:** {ekg_data.min():.2f} to {ekg_data.max():.2f} mV")
+                                                            st.write(f"**Signal duration:** {(time_data.max() - time_data.min()):.2f} seconds")
+                                                            st.write(f"**Sampling rate:** 500 Hz")
+                                                            st.write(f"**Total samples:** {len(ekg_data)}")
+                                                            
+                                                            if peaks is not None and len(peaks) > 0:
+                                                                st.write(f"**Peaks found:** {len(peaks)}")
+                                                                # Show first few peak times
+                                                                if len(peaks) > 0:
+                                                                    peak_times_sample = time_data[peaks[:min(5, len(peaks))]]
+                                                                    st.write(f"**First few peak times:** {[f'{t:.2f}s' for t in peak_times_sample]}")
+                                                                    
+                                                                    # Calculate and show RR intervals
+                                                                    if len(peaks) > 1:
+                                                                        peak_times_all = time_data[peaks]
+                                                                        rr_intervals = np.diff(peak_times_all)
+                                                                        st.write(f"**RR intervals (first 5):** {[f'{rr:.3f}s' for rr in rr_intervals[:5]]}")
+                                                                        st.write(f"**Avg RR interval:** {np.mean(rr_intervals):.3f}s")
+                                                                        st.write(f"**HR from RR:** {60/np.mean(rr_intervals):.1f} bpm")
+                                                    else:
+                                                        avg_hr = None
+                                                        peaks = None
+                                                        st.error(f"❌ Heart rate calculation failed: {hr_message}")
+                                                        
+                                                        # Enhanced debugging information
+                                                        with st.expander("🔧 Enhanced Debugging Information"):
+                                                            st.write(f"**Error:** {hr_message}")
+                                                            st.write(f"**Data shape:** {len(ekg_data)} samples")
+                                                            st.write(f"**Time range:** {time_data_raw.min():.0f} to {time_data_raw.max():.0f}")
+                                                            st.write(f"**EKG range:** {np.min(ekg_data):.3f} to {np.max(ekg_data):.3f} mV")
+                                                            st.write(f"**EKG std:** {np.std(ekg_data):.3f} mV")
+                                                            st.write(f"**EKG mean:** {np.mean(ekg_data):.3f} mV")
+                                                            
+                                                            # Show signal statistics
+                                                            ekg_filtered = ekg_data - np.mean(ekg_data)
+                                                            st.write(f"**Filtered EKG range:** {np.min(ekg_filtered):.3f} to {np.max(ekg_filtered):.3f} mV")
+                                                            st.write(f"**Filtered EKG std:** {np.std(ekg_filtered):.3f} mV")
+                                                            
+                                                            # Show a simple signal preview
+                                                            st.write("**Signal Preview (first 1000 samples):**")
+                                                            try:
+                                                                import matplotlib.pyplot as plt
+                                                                fig, ax = plt.subplots(figsize=(12, 4))
+                                                                sample_size = min(1000, len(ekg_data))
+                                                                sample_time = time_data[:sample_size] if len(time_data) >= sample_size else time_data
+                                                                sample_ekg = ekg_data[:sample_size]
+                                                                
+                                                                ax.plot(sample_time, sample_ekg, 'b-', linewidth=0.8)
+                                                                ax.set_xlabel('Time (s)')
+                                                                ax.set_ylabel('Amplitude (mV)')
+                                                                ax.set_title('EKG Signal Preview')
+                                                                ax.grid(True, alpha=0.3)
+                                                                
+                                                                # Add threshold line for reference
+                                                                signal_abs = np.abs(ekg_filtered[:sample_size])
+                                                                threshold = np.percentile(signal_abs, 85)
+                                                                ax.axhline(y=threshold, color='r', linestyle='--', alpha=0.7, label=f'Threshold: {threshold:.3f}mV')
+                                                                ax.axhline(y=-threshold, color='r', linestyle='--', alpha=0.7)
+                                                                ax.legend()
+                                                                
+                                                                plt.tight_layout()
+                                                                st.pyplot(fig)
+                                                            except Exception as plot_error:
+                                                                st.write(f"Could not generate debug plot: {plot_error}")
+                                                    
+
                                                 else:
                                                     st.error("❌ Need at least 2 columns for EKG analysis")
                                                     ekg_data = None
@@ -972,7 +1227,7 @@ if credentials['usernames']:
                                                         # Use original method for range calculation
                                                         range_hr = EKG_data.average_hr(
                                                             pd.Series(range_ekg_data),
-                                                            sampling_rate=1000,
+                                                            sampling_rate=500,
                                                             threshold=360,
                                                             window_size=5,
                                                             min_peak_distance=200
@@ -1033,7 +1288,7 @@ if credentials['usernames']:
                                                 ax.plot(plot_time, plot_ekg, 'b-', linewidth=0.8, label='EKG Signal')
                                                 
                                                 # Plot peaks if they exist
-                                                if 'peaks' in locals() and peaks is not None and len(peaks) > 0:
+                                                if peaks is not None and len(peaks) > 0:
                                                     # Find peaks within the time range
                                                     peak_indices_in_range = peaks[(peaks < len(time_data)) & 
                                                                                 (time_data[peaks] >= time_range[0]) & 
@@ -1042,9 +1297,21 @@ if credentials['usernames']:
                                                     if len(peak_indices_in_range) > 0:
                                                         peak_times = time_data[peak_indices_in_range]
                                                         peak_values = ekg_data[peak_indices_in_range]
-                                                        ax.plot(peak_times, peak_values, 'ro', markersize=6, 
-                                                            label=f'R-Peaks ({len(peak_indices_in_range)})')
-                                                
+                                                        ax.plot(peak_times, peak_values, 'ro', markersize=8, 
+                                                            label=f'R-Peaks ({len(peak_indices_in_range)})', alpha=0.8)
+                                                        
+                                                        # Add heart rate annotation
+                                                        if len(peak_indices_in_range) > 1:
+                                                            # Calculate HR in this time range
+                                                            rr_intervals_range = np.diff(peak_times)
+                                                            if len(rr_intervals_range) > 0:
+                                                                avg_rr_range = np.mean(rr_intervals_range)
+                                                                hr_range = 60 / avg_rr_range
+                                                                ax.text(0.02, 0.90, f'Range HR: {hr_range:.1f} bpm', 
+                                                                    transform=ax.transAxes, 
+                                                                    verticalalignment='top',
+                                                                    bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+                                                                                                
                                                 # Formatting
                                                 ax.set_xlabel('Zeit (s)')
                                                 ax.set_ylabel('Amplitude (mV)')
@@ -1179,35 +1446,61 @@ if credentials['usernames']:
                             with st.expander("➕ EKG-Test hinzufügen"):
                                 with st.form(f"add_ekg_{selected_user_id}"):
                                     test_date = st.date_input("📅 Testdatum", value=date.today())
-                                    ekg_file = st.file_uploader("📁 EKG-Datei hochladen", type=['csv', 'txt', 'json'])
+                                    ekg_file = st.file_uploader("📁 EKG-Datei hochladen", type=['csv', 'txt', 'dat', 'tsv'])
                                     
                                     if st.form_submit_button("📤 EKG-Test hinzufügen"):
                                         if ekg_file is not None:
-                                            # Create EKG data directory
-                                            ekg_dir = "data/ekg_data"
-                                            os.makedirs(ekg_dir, exist_ok=True)
+                                            # Validate file extension
+                                            allowed_extensions = ['.csv', '.txt', '.dat', '.tsv']
+                                            uploaded_file_extension = os.path.splitext(ekg_file.name)[1].lower()
                                             
-                                            # Save file
-                                            timestamp = int(time.time())
-                                            filename = f"ekg_{selected_user_id}_{timestamp}_{ekg_file.name}"
-                                            file_path = os.path.join(ekg_dir, filename)
-                                            
-                                            with open(file_path, "wb") as f:
-                                                f.write(ekg_file.read())
-                                            
-                                            # Save to database with correct column names
-                                            conn = sqlite3.connect('personen.db')
-                                            cursor = conn.cursor()
-                                            cursor.execute('''
-                                                INSERT INTO ekg_tests (user_id, date, result_link)
-                                                VALUES (?, ?, ?)
-                                            ''', (selected_user_id, str(test_date), file_path))
-                                            test_id = cursor.lastrowid
-                                            conn.commit()
-                                            conn.close()
-                                            
-                                            st.success(f"✅ EKG-Test erfolgreich hinzugefügt (ID: {test_id})")
-                                            st.rerun()
+                                            if uploaded_file_extension not in allowed_extensions:
+                                                st.error(f"❌ Unsupported file type: {uploaded_file_extension}")
+                                                st.info("Supported formats: .csv, .txt, .dat, .tsv")
+                                            else:
+                                                try:
+                                                    # Create EKG data directory
+                                                    ekg_dir = "data/ekg_data"
+                                                    os.makedirs(ekg_dir, exist_ok=True)
+                                                    
+                                                    # Save file with proper extension handling
+                                                    timestamp = int(time.time())
+                                                    # Clean filename to avoid issues
+                                                    clean_filename = "".join(c for c in ekg_file.name if c.isalnum() or c in '._-')
+                                                    filename = f"ekg_{selected_user_id}_{timestamp}_{clean_filename}"
+                                                    file_path = os.path.join(ekg_dir, filename)
+                                                    
+                                                    # Save the uploaded file
+                                                    with open(file_path, "wb") as f:
+                                                        f.write(ekg_file.getbuffer())
+                                                    
+                                                    # Verify file was saved and has content
+                                                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                                                        # Save to database with correct column names
+                                                        conn = sqlite3.connect('personen.db')
+                                                        cursor = conn.cursor()
+                                                        cursor.execute('''
+                                                            INSERT INTO ekg_tests (user_id, date, result_link)
+                                                            VALUES (?, ?, ?)
+                                                        ''', (selected_user_id, str(test_date), file_path))
+                                                        test_id = cursor.lastrowid
+                                                        conn.commit()
+                                                        conn.close()
+                                                        
+                                                        st.success(f"✅ EKG-Test erfolgreich hinzugefügt (ID: {test_id})")
+                                                        st.info(f"📁 Datei gespeichert: {filename}")
+                                                        st.rerun()
+                                                    else:
+                                                        st.error("❌ Fehler beim Speichern der Datei")
+                                                        
+                                                except Exception as e:
+                                                    st.error(f"❌ Fehler beim Hinzufügen des EKG-Tests: {e}")
+                                                    # Clean up file if it was partially created
+                                                    if 'file_path' in locals() and os.path.exists(file_path):
+                                                        try:
+                                                            os.remove(file_path)
+                                                        except:
+                                                            pass
                                         else:
                                             st.error("❌ Bitte wählen Sie eine Datei aus")
                             
