@@ -100,6 +100,6 @@ flowchart TD
 
 - Standard-Passwörter können mit reset_passwords.py neu gesetzt werden
 
-- EKG-Daten müssen als .csv oder .txt mit zwei Spalten (mV, ms) vorliegen
+- EKG-Daten müssen als .csv oder .txt mit zwei Spalten (mV, ms) vorliegen, und in data/activity_data gespeichert sein
 
 - .fit-Dateien müssen in data/sports_data/ gespeichert sein
