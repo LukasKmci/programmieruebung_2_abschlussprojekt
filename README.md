@@ -96,7 +96,7 @@ flowchart TD
 
 ### ℹ️ Hinweise
 - Admin-Login: admin / admin123
-- Benutzer1 (Julian Huber): User1 / Password123
+- Benutzer1 (Julian Huber): User1 / password123
 
 - Standard-Passwörter können mit reset_passwords.py neu gesetzt werden
 
