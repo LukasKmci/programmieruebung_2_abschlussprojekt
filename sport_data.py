@@ -85,10 +85,10 @@ def load_sports_data():
                 print(f"✗ {filename} enthält keine gültigen Zeitdaten")
                 
         except Exception as e:
-            all_data[os.path.basename(fit_file)] = None  # sichtbar machen im Debug
+            print(f"✗ Fehler beim Laden von {os.path.basename(fit_file)}: {e}")
             import traceback
             traceback.print_exc()
-            continue
+            continue  # Don't add failed files to all_data
     
     print(f"Insgesamt {len(all_data)} .fit Dateien geladen")
     return all_data
@@ -238,3 +238,121 @@ def get_time_range_info(data, start_percent, end_percent):
         'start_datetime': datetime.datetime.fromtimestamp(start_timestamp),
         'end_datetime': datetime.datetime.fromtimestamp(end_timestamp)
     }
+def create_activity_heatmap(data, time_range_minutes):
+    """
+    Create a heatmap visualization for the sports activity data
+    """
+    # Filter data based on time range
+    t0 = data["time"][0]
+    time_minutes = (data["time"] - t0) / 60
+    mask = (time_minutes >= time_range_minutes[0]) & (time_minutes <= time_range_minutes[1])
+    
+    # Get filtered data
+    filtered_time = time_minutes[mask]
+    filtered_hr = data["heartrate"][mask]
+    filtered_speed = data["velocity"][mask] * 3.6  # Convert to km/h
+    filtered_power = data["power"][mask]
+    filtered_altitude = data["altitude"][mask]
+    
+    # Create time bins (e.g., every 30 seconds)
+    time_bins = np.arange(filtered_time.min(), filtered_time.max() + 0.5, 0.5)
+    
+    # Create intensity zones for different metrics
+    hr_zones = np.linspace(filtered_hr.min(), filtered_hr.max(), 6)
+    speed_zones = np.linspace(filtered_speed.min(), filtered_speed.max(), 6)
+    power_zones = np.linspace(filtered_power.min(), filtered_power.max(), 6)
+    
+    # Create heatmap data matrix
+    metrics = ['Heart Rate', 'Speed', 'Power', 'Altitude']
+    heatmap_data = []
+    
+    for i, time_bin in enumerate(time_bins[:-1]):
+        # Find data points in this time bin
+        bin_mask = (filtered_time >= time_bin) & (filtered_time < time_bins[i + 1])
+        
+        if np.any(bin_mask):
+            # Calculate average values for this time bin
+            avg_hr = np.mean(filtered_hr[bin_mask]) if np.any(filtered_hr[bin_mask] > 0) else 0
+            avg_speed = np.mean(filtered_speed[bin_mask]) if np.any(filtered_speed[bin_mask] > 0) else 0
+            avg_power = np.mean(filtered_power[bin_mask]) if np.any(filtered_power[bin_mask] > 0) else 0
+            avg_altitude = np.mean(filtered_altitude[bin_mask]) if np.any(filtered_altitude[bin_mask] > 0) else 0
+            
+            heatmap_data.append([avg_hr, avg_speed, avg_power, avg_altitude])
+        else:
+            heatmap_data.append([0, 0, 0, 0])
+    
+    heatmap_data = np.array(heatmap_data).T
+    
+    # Normalize each metric to 0-100 scale for better visualization
+    normalized_data = np.zeros_like(heatmap_data)
+    for i in range(len(metrics)):
+        if heatmap_data[i].max() > 0:
+            normalized_data[i] = (heatmap_data[i] / heatmap_data[i].max()) * 100
+    
+    return normalized_data, time_bins[:-1], metrics
+
+def create_intensity_heatmap(data, time_range_minutes):
+    """
+    Create an intensity heatmap showing workout intensity over time
+    """
+    # Filter data based on time range
+    t0 = data["time"][0]
+    time_minutes = (data["time"] - t0) / 60
+    mask = (time_minutes >= time_range_minutes[0]) & (time_minutes <= time_range_minutes[1])
+    
+    filtered_time = time_minutes[mask]
+    filtered_hr = data["heartrate"][mask]
+    filtered_speed = data["velocity"][mask] * 3.6
+    filtered_power = data["power"][mask]
+    
+    # Create time windows (1-minute intervals)
+    time_windows = np.arange(filtered_time.min(), filtered_time.max() + 1, 1)
+    
+    intensity_data = []
+    time_labels = []
+    
+    for i, window_start in enumerate(time_windows[:-1]):
+        window_end = time_windows[i + 1]
+        window_mask = (filtered_time >= window_start) & (filtered_time < window_end)
+        
+        if np.any(window_mask):
+            # Calculate intensity score (normalized combination of HR, speed, power)
+            hr_intensity = np.mean(filtered_hr[window_mask]) / 200 * 100 if np.any(filtered_hr[window_mask] > 0) else 0
+            speed_intensity = np.mean(filtered_speed[window_mask]) / 50 * 100 if np.any(filtered_speed[window_mask] > 0) else 0
+            power_intensity = np.mean(filtered_power[window_mask]) / 400 * 100 if np.any(filtered_power[window_mask] > 0) else 0
+            
+            # Weighted average intensity
+            total_intensity = (hr_intensity * 0.4 + speed_intensity * 0.3 + power_intensity * 0.3)
+            intensity_data.append(total_intensity)
+        else:
+            intensity_data.append(0)
+        
+        time_labels.append(f"{int(window_start)}min")
+    
+    return intensity_data, time_labels
+
+
+# OPTIONAL: Add a geographic heatmap if you have GPS data
+# Add this additional function if your FIT files contain position data:
+
+def create_geographic_heatmap(data):
+    """
+    Create a geographic heatmap if GPS data is available
+    """
+    try:
+        # Check if position data exists
+        if 'position_lat' in data and 'position_long' in data:
+            lat_data = data['position_lat']
+            lon_data = data['position_long']
+            
+            # Filter out zero/invalid coordinates
+            valid_coords = (lat_data != 0) & (lon_data != 0)
+            
+            if np.any(valid_coords):
+                return lat_data[valid_coords], lon_data[valid_coords]
+            else:
+                return None, None
+        else:
+            return None, None
+    except:
+        return None, None
