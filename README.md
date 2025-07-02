@@ -5,7 +5,7 @@
 Die **EKG App** dient der intuitiven Visualisierung und Analyse von Sport- und EKG-Daten einzelner Benutzer. Sie bietet:
 
 - 🔐 Benutzer-Login mit Profilbild, Registrierung & Rollen (User/Admin)  
-- 🫀 Verwaltung & Anzeige von EKG-Testdaten mit Peak-Erkennung  
+- 🫀 Verwaltung & Anzeige von EKG-Testdaten mit Peak-Erkennung (EKG testdaten können nur vom Admin hochgeladen werden, und User können nur eigene EKG tests analysieren)
 - 🏃‍♂️ Import & Auswertung von Trainingsdaten aus `.fit`-Dateien  
 - 👩‍⚕️ Admin-Funktionen zur Benutzerverwaltung  
 - 📈 Visualisierung von Herzfrequenz, Geschwindigkeit, Leistung, etc.
