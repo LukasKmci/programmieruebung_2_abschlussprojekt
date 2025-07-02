@@ -49,7 +49,7 @@ Automatisch berechnete Kennwerte:
 ![alt text](image.png)
 ### 🖼️ APP Screenshot – Benutzer erstellen
 ![alt text](image-1.png)
-### 🖼️ APP Screenshot – Benutzer löschen
+### 🖼️ APP Screenshot – Benutzer löschen (Admin Funktion)
 ![alt text](image-2.png)
 ### 🖼️ APP Screenshot – EKG Analyse
 [EKG & Sports Analyse Dashboard.pdf](https://github.com/user-attachments/files/21023445/EKG.Sports.Analyse.Dashboard.pdf)
