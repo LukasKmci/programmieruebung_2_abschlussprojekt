@@ -991,18 +991,18 @@ if credentials['usernames']:
                                     test_id, user_id, test_date, result_link = selected_test
                                     
                                     # DEBUG: Show file information
-                                    with st.expander("🔍 Debug Information"):
-                                        st.write(f"**Test ID:** {test_id}")
-                                        st.write(f"**File Path:** {result_link}")
+                                    # with st.expander("🔍 Debug Information"):
+                                    #     st.write(f"**Test ID:** {test_id}")
+                                    #     st.write(f"**File Path:** {result_link}")
                                         
-                                        # Resolve file path
-                                        if result_link and not os.path.isabs(result_link):
-                                            result_link = os.path.abspath(result_link)
+                                        # # Resolve file path
+                                        # if result_link and not os.path.isabs(result_link):
+                                        #     result_link = os.path.abspath(result_link)
                                         
-                                        st.write(f"**Absolute Path:** {result_link}")
-                                        st.write(f"**File exists:** {os.path.exists(result_link) if result_link else 'No path'}")
-                                        if result_link and os.path.exists(result_link):
-                                            st.write(f"**File size:** {os.path.getsize(result_link)} bytes")
+                                        # st.write(f"**Absolute Path:** {result_link}")
+                                        # st.write(f"**File exists:** {os.path.exists(result_link) if result_link else 'No path'}")
+                                        # if result_link and os.path.exists(result_link):
+                                        #     st.write(f"**File size:** {os.path.getsize(result_link)} bytes")
                                     
                                     # Initialize variables
                                     ekg_data = None
@@ -1039,13 +1039,7 @@ if credentials['usernames']:
                                                 df = pd.read_csv(result_link, header=None)
                                 
                                             
-                                            # Debug: Show first few rows
-                                            with st.expander("🔍 Data Preview"):
-                                                st.write("First 10 rows of loaded data:")
-                                                st.dataframe(df.head(10))
-                                                st.write(f"Data shape: {df.shape}")
-                                                st.write(f"Columns: {list(df.columns)}")
-                                            
+                                        
                                             # Auto-detect EKG and time columns
                                             if df.shape[1] >= 2:
                                                 # For EKG data: Column 0 = EKG values (mV), Column 1 = Time
@@ -1105,18 +1099,6 @@ if credentials['usernames']:
                                                     else:
                                                         st.warning("⚠️ Could not extract peaks for visualization")
                                                             
-                                                    # Show diagnostic information
-                                                    with st.expander("🔍 Heart Rate Calculation Details"):
-                                                        st.write(f"**Calculated HR:** {avg_hr:.1f} bpm")
-                                                        st.write(f"**Calculation details:** {hr_message}")
-                                                        st.write(f"**Age:** {age} years (estimated)")
-                                                        st.write(f"**Max HR (220-age):** {max_hr} bpm")
-                                                        st.write(f"**HR as % of max:** {(avg_hr/max_hr)*100:.1f}%")
-                                                        st.write(f"**Time range:** {time_data.min():.2f} to {time_data.max():.2f} seconds")
-                                                        st.write(f"**EKG signal range:** {ekg_data.min():.2f} to {ekg_data.max():.2f} mV")
-                                                        st.write(f"**Signal duration:** {(time_data.max() - time_data.min()):.2f} seconds")
-                                                        st.write(f"**Sampling rate:** 500 Hz")
-                                                        st.write(f"**Total samples:** {len(ekg_data)}")
                                                         
                                                         if peaks is not None and len(peaks) > 0:
                                                             st.write(f"**Peaks found:** {len(peaks)}")
@@ -1503,6 +1485,24 @@ if credentials['usernames']:
                                                 else:
                                                     st.write("**Herzrhythmus Analyse:**")
                                                     st.write("- Nicht verfügbar")
+                                    # Debug: Show first few rows
+                                        with st.expander("🔍 Data Preview"):
+                                            st.write("First 10 rows of loaded data:")
+                                            st.dataframe(df.head(10))
+                                            st.write(f"Data shape: {df.shape}")
+                                            st.write(f"Columns: {list(df.columns)}")
+                                        # Show diagnostic information
+                                        with st.expander("🔍 Heart Rate Calculation Details"):
+                                            st.write(f"**Calculated HR:** {avg_hr:.1f} bpm")
+                                            st.write(f"**Calculation details:** {hr_message}")
+                                            st.write(f"**Age:** {age} years (estimated)")
+                                            st.write(f"**Max HR (220-age):** {max_hr} bpm")
+                                            st.write(f"**HR as % of max:** {(avg_hr/max_hr)*100:.1f}%")
+                                            st.write(f"**Time range:** {time_data.min():.2f} to {time_data.max():.2f} seconds")
+                                            st.write(f"**EKG signal range:** {ekg_data.min():.2f} to {ekg_data.max():.2f} mV")
+                                            st.write(f"**Signal duration:** {(time_data.max() - time_data.min()):.2f} seconds")
+                                            st.write(f"**Sampling rate:** 500 Hz")
+                                            st.write(f"**Total samples:** {len(ekg_data)}")
                                                     
                                 except Exception as e:
                                     st.error(f"❌ Fehler beim Laden des EKG-Tests: {e}")
@@ -1870,9 +1870,46 @@ if credentials['usernames']:
                     st.error(f"❌ Error loading file: {e}")
                     st.stop()
 
-                # Analysis area
+                # Calculate total duration for the slider
                 total_duration = float(data['time'][-1] - data['time'][0])
                 st.write(f"**Gesamte Trainingsdauer:** {format_duration(total_duration)}")
+
+                # Calculate stats for the full dataset first (without filtering)
+                full_filtered = filter_data_by_time_range(data, 0, 100)  # Full range
+                full_stats = calculate_filtered_stats(full_filtered)
+
+                # Analysis area - show full training statistics
+                st.markdown("---")
+                st.header("📊 Trainingsstatistiken (Gesamtes Training)")
+
+                col1, col2, col3 = st.columns(3)
+                col1.metric("⏱️ Dauer", format_duration(full_stats['duration_seconds']))
+                col2.metric("📏 Distanz", f"{full_stats['total_distance_km']:.2f} km")
+                col3.metric("🏃‍♂️ Ø Geschwindigkeit", f"{full_stats['avg_speed_kmh']:.1f} km/h")
+
+                col4, col5, col6 = st.columns(3)
+                col4.metric("🚀 Max. Geschwindigkeit", f"{full_stats['max_speed_kmh']:.1f} km/h")
+                col5.metric("❤️ Ø Herzfrequenz", f"{full_stats['avg_heartrate']:.0f} bpm")
+                col6.metric("❤️‍🔥 Max. Herzfrequenz", f"{full_stats['max_heartrate']:.0f} bpm")
+
+                col7, col8, col9 = st.columns(3)
+                col7.metric("⚙️ Ø Kadenz", f"{full_stats['avg_cadence']:.0f} rpm")
+                col8.metric("⚙️ Max. Kadenz", f"{full_stats['max_cadence']:.0f} rpm")
+                col9.metric("⚡ Ø Leistung", f"{full_stats['avg_power']:.0f} W")
+
+                col10, col11, col12 = st.columns(3)
+                col10.metric("⚡ Max. Leistung", f"{full_stats['max_power']:.0f} W")
+                col11.metric("🌡️ Ø Temperatur", f"{full_stats['avg_temperature']:.1f} °C")
+                col12.metric("🌡️ Max. Temperatur", f"{full_stats['max_temperature']:.1f} °C")
+
+                col13, col14, col15 = st.columns(3)
+                col13.metric("⛰️ Ø Höhe", f"{full_stats['avg_altitude']:.0f} m")
+                col14.metric("⛰️ Max. Höhe", f"{full_stats['max_altitude']:.0f} m")
+                col15.metric("⛰️ Min. Höhe", f"{full_stats['min_altitude']:.0f} m")
+
+                # TIME SELECTION MOVED HERE - just above the graph
+                st.markdown("---")
+                st.header("📈 Trainingsverlauf")
 
                 time_range = st.slider(
                     "⏱️ Zeitraum wählen (min)",
@@ -1883,6 +1920,7 @@ if credentials['usernames']:
                     format="%.1f min"
                 )
 
+                # Now filter data based on selected time range
                 start_percent = (time_range[0] * 60) / total_duration * 100
                 end_percent = (time_range[1] * 60) / total_duration * 100
 
@@ -1890,38 +1928,21 @@ if credentials['usernames']:
                 stats = calculate_filtered_stats(filtered)
                 info = get_time_range_info(data, start_percent, end_percent)
 
-                st.markdown("---")
-                st.header("📊 Trainingsstatistiken")
+                # Show filtered statistics if different from full range
+                if time_range != (0.0, float(total_duration) / 60):
+                    st.subheader("📊 Statistiken für gewählten Zeitraum")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("⏱️ Dauer", format_duration(stats['duration_seconds']))
+                    col2.metric("📏 Distanz", f"{stats['total_distance_km']:.2f} km")
+                    col3.metric("🏃‍♂️ Ø Geschwindigkeit", f"{stats['avg_speed_kmh']:.1f} km/h")
 
-                col1, col2, col3 = st.columns(3)
-                col1.metric("⏱️ Dauer", format_duration(stats['duration_seconds']))
-                col2.metric("📏 Distanz", f"{stats['total_distance_km']:.2f} km")
-                col3.metric("🏃‍♂️ Ø Geschwindigkeit", f"{stats['avg_speed_kmh']:.1f} km/h")
-
-                col4, col5, col6 = st.columns(3)
-                col4.metric("🚀 Max. Geschwindigkeit", f"{stats['max_speed_kmh']:.1f} km/h")
-                col5.metric("❤️ Ø Herzfrequenz", f"{stats['avg_heartrate']:.0f} bpm")
-                col6.metric("❤️‍🔥 Max. Herzfrequenz", f"{stats['max_heartrate']:.0f} bpm")
-
-                col7, col8, col9 = st.columns(3)
-                col7.metric("⚙️ Ø Kadenz", f"{stats['avg_cadence']:.0f} rpm")
-                col8.metric("⚙️ Max. Kadenz", f"{stats['max_cadence']:.0f} rpm")
-                col9.metric("⚡ Ø Leistung", f"{stats['avg_power']:.0f} W")
-
-                col10, col11, col12 = st.columns(3)
-                col10.metric("⚡ Max. Leistung", f"{stats['max_power']:.0f} W")
-                col11.metric("🌡️ Ø Temperatur", f"{stats['avg_temperature']:.1f} °C")
-                col12.metric("🌡️ Max. Temperatur", f"{stats['max_temperature']:.1f} °C")
-
-                col13, col14, col15 = st.columns(3)
-                col13.metric("⛰️ Ø Höhe", f"{stats['avg_altitude']:.0f} m")
-                col14.metric("⛰️ Max. Höhe", f"{stats['max_altitude']:.0f} m")
-                col15.metric("⛰️ Min. Höhe", f"{stats['min_altitude']:.0f} m")
+                    col4, col5, col6 = st.columns(3)
+                    col4.metric("❤️ Ø Herzfrequenz", f"{stats['avg_heartrate']:.0f} bpm")
+                    col5.metric("❤️‍🔥 Max. Herzfrequenz", f"{stats['max_heartrate']:.0f} bpm")
+                    col6.metric("⚡ Ø Leistung", f"{stats['avg_power']:.0f} W")
 
                 # Plotly visualization for sports data
-                st.markdown("---")
-                st.header("📈 Trainingsverlauf im gewählten Zeitraum")
-
                 t0 = filtered["time"][0]
                 time_minutes = (filtered["time"] - t0) / 60
                 mask = (time_minutes >= time_range[0]) & (time_minutes <= time_range[1])
@@ -2221,5 +2242,4 @@ st.markdown("---")
 if 'current_user_role' in locals() and current_user_role == 'admin':
     st.caption("EKG & Sports Analyse Dashboard - ADMINISTRATOR VERSION | Personen.db Integration")
 else:
-    st.caption("EKG & Sports Analyse Dashboard | Version 4.0")
-st.caption("EKG & Sports Analyse Dashboard | Version 2.1 | Lukas Köhler | Simon Krainer")
+    st.caption("EKG & Sports Analyse Dashboard | Version 12.1 | Lukas Köhler | Simon Krainer")
