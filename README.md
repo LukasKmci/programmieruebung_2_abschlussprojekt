@@ -52,8 +52,10 @@ Automatisch berechnete Kennwerte:
 ### 🖼️ APP Screenshot – Benutzer löschen
 ![alt text](image-2.png)
 ### 🖼️ APP Screenshot – EKG Analyse
+[EKG & Sports Analyse Dashboard.pdf](https://github.com/user-attachments/files/21023445/EKG.Sports.Analyse.Dashboard.pdf)
 
 ### 🖼️ APP Screenshot – Trainings
+[EKG & Sports Analyse Dashboard2.pdf](https://github.com/user-attachments/files/21023461/EKG.Sports.Analyse.Dashboard2.pdf)
 
 ### 🗂️ Projektstruktur
 | 📁 Datei/Ordner         | 📝 Beschreibung                                                       |
@@ -94,6 +96,7 @@ flowchart TD
 
 ### ℹ️ Hinweise
 - Admin-Login: admin / admin123
+- Benutzer1 (Julian Huber): User1 / Password123
 
 - Standard-Passwörter können mit reset_passwords.py neu gesetzt werden
 
